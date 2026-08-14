@@ -20,10 +20,21 @@ it()   { CURRENT="$1"; }
 ok()   { PASS=$((PASS + 1)); printf '  ok    %s\n' "${1:-$CURRENT}"; return 0; }
 
 # fail <name> [detail]
+#
+# Dumps the last desvio output too. `assert_eq 0 "$STATUS"` on its own reports
+# "expected 0, got 255" and nothing else, which is unactionable on a machine you
+# cannot reach — and CI is exactly that machine.
 fail() {
   FAIL=$((FAIL + 1))
   printf '  FAIL  %s\n' "${1:-$CURRENT}"
   if [ -n "${2:-}" ]; then printf '%s\n' "$2" | sed 's/^/          /'; fi
+  case "${2:-}" in
+    *"in output:"*) ;;                      # assert_contains already showed it
+    *) if [ -n "${OUT:-}" ]; then
+         printf '          --- last desvio output ---\n'
+         printf '%s\n' "$OUT" | tail -30 | sed 's/^/          /'
+       fi ;;
+  esac
   return 0
 }
 
