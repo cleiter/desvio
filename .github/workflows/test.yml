@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: syntax
+        run: bash -n bin/desvio lib/*.sh examples/paseo/*.sh tests/run.sh tests/lib/harness.sh
+
+      - name: versions
+        run: bash --version | head -1; git --version
+
+      - name: tests
+        run: bash tests/run.sh
+
+      # The valuable half of this matrix. macOS ships bash 3.2 as /bin/bash and
+      # the README promises 3.2 support, but bin/desvio is `#!/usr/bin/env bash`
+      # — so on any machine with a newer bash first on PATH, the 3.2 code paths
+      # (the parallel arrays and the empty-array trap in lib/cmd-build.sh) are
+      # never exercised. Shadowing `bash` on PATH is what actually tests them.
+      - name: tests under bash 3.2
+        if: matrix.os == 'macos-latest'
+        run: |
+          /bin/bash --version | head -1
+          mkdir -p "$RUNNER_TEMP/bash32"
+          ln -sf /bin/bash "$RUNNER_TEMP/bash32/bash"
+          PATH="$RUNNER_TEMP/bash32:$PATH" /bin/bash tests/run.sh

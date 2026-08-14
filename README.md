@@ -197,6 +197,19 @@ It loads the config the same way `build` does — honouring `--config` and `$DES
 
 `exec` hands the script the process, so its exit status and its signals are its own. Tasks are deliberately not chained to `build`: assembling a build and installing one are different decisions, and you want the second on a different schedule from the first.
 
+## Tests
+
+```sh
+tests/run.sh                 # everything
+tests/run.sh refsafety base  # only the files whose names match
+```
+
+Plain bash and git, no test framework to install. Every test builds a throwaway world — a bare origin, a clone of it standing in for your checkout, an isolated `HOME` and `GIT_CONFIG_GLOBAL` — so nothing it does can reach a repository you care about. Conflicts are resolved by an injected `desvio_resolve_conflict`, never by the real agent.
+
+The two suites that justify the rest are `test-refsafety.sh` and `test-markers.sh`: they hold the README's two structural promises, that your branches are never written to and that a conflict marker is never committed. Both are mutation-checked — breaking `assert_refs_unchanged` or `assert_no_markers` in `lib/` makes them fail.
+
+CI runs the suite on Linux and macOS, and on macOS a second time with `/bin/bash` first on `PATH`, which is the only way the bash 3.2 support claimed above is actually exercised.
+
 ## Known sharp edges
 
 - **A stale rerere resolution can be wrong.** rerere matches on conflict text, so a resolution recorded from one merge can replay into a different one. desvio refuses to commit a file that still holds conflict markers, but a resolution that dropped a side leaves no markers to find. The gate is what catches it. To drop one: `git rerere forget <path>` during the merge.
