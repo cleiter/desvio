@@ -32,7 +32,7 @@ usage() {
 usage: desvio <command> [options]
 
   build [<base>]   assemble every branch in the manifest onto <base> and verify
-  run [<name>]     run <name>.sh from your config directory, config loaded
+  run [<name>...]  run <name>.sh from your config directory, config loaded
   init [<repo>]    write a desvio.conf and manifest.txt here
   help [<command>] this, or a command's own options
 

@@ -101,6 +101,74 @@ assert_eq 0 "$STATUS" "it ran"
 assert_contains "$OUT" "cwd=$BUILD" "and still ran in the config directory"
 
 # ---------------------------------------------------------------------------
+# Chaining. `desvio build && desvio run package install` is the shape this is
+# for, so the order and the fail-fast behaviour are the contract.
+#
+# Two tasks that record the order they ran in, and can be told to fail.
+tasks_chain() {
+  local t
+  for t in one two three; do
+    cat > "$BUILD/$t.sh" <<EOF
+#!/usr/bin/env bash
+echo "$t" >> "\$DESVIO_STATE/order"
+[ -z "\${FAIL_$t:-}" ] || exit 7
+EOF
+    chmod +x "$BUILD/$t.sh"
+  done
+  mkdir -p "$BUILD/state"
+}
+
+it "several tasks run in the order they are named"
+setup
+tasks_chain
+run_desvio run one two three
+assert_eq 0 "$STATUS" "the chain succeeded"
+assert_eq "one two three" "$(tr '\n' ' ' < "$BUILD/state/order" | sed 's/ $//')" "in order"
+assert_contains "$OUT" "run one  (1/3)" "and says where it is in the chain"
+assert_contains "$OUT" "run three  (3/3)" "including the last step"
+
+# ---------------------------------------------------------------------------
+it "a failing task stops the chain"
+setup
+tasks_chain
+FAIL_two=1 run_desvio run one two three
+assert_eq 1 "$STATUS" "the chain failed"
+assert_contains "$OUT" "task 'two' failed (exit 7)" "it names the task and its status"
+assert_contains "$OUT" "stopped before three" "and what it did not run"
+assert_eq "one two" "$(tr '\n' ' ' < "$BUILD/state/order" | sed 's/ $//')" "three never ran"
+
+# ---------------------------------------------------------------------------
+it "the last task in a chain still owns the exit status"
+setup
+tasks_chain
+FAIL_three=1 run_desvio run one three
+assert_eq 7 "$STATUS" "exec means the exit status is the task's own"
+
+# ---------------------------------------------------------------------------
+it "a typo in a later name costs nothing"
+setup
+tasks_chain
+run_desvio run one instal
+assert_contains "$OUT" "no task 'instal'" "it refuses before running anything"
+assert_eq 0 "$(cat "$BUILD/state/order" 2>/dev/null | wc -l | tr -d ' ')" "'one' never ran"
+
+# ---------------------------------------------------------------------------
+it "arguments plus several tasks is refused, not guessed"
+setup
+tasks_chain
+run_desvio run one two --flag
+assert_contains "$OUT" "arguments belong to one task" "it refuses the ambiguity"
+assert_contains "$OUT" "you named 2: one two" "and says what it saw"
+
+# ---------------------------------------------------------------------------
+it "-- ends the task list, so a bare argument stays an argument"
+setup
+task_env
+run_desvio run env -- one
+assert_eq 0 "$STATUS" "it ran"
+assert_contains "$OUT" "args=one" "'one' went to the task, not the name list"
+
+# ---------------------------------------------------------------------------
 it "help works without a config at all"
 fixture_new
 cd "$TEST_TMP" || exit 1

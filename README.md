@@ -185,7 +185,8 @@ Put an executable `<name>.sh` next to your `desvio.conf` and run it with:
 
 ```sh
 desvio run start                 # ./start.sh
-desvio run package --no-install  # arguments pass straight through
+desvio run package --no-install  # after a single name, arguments pass straight through
+desvio run package install       # in that order, and the first failure stops there
 desvio run                       # lists what is there
 ```
 
@@ -195,7 +196,15 @@ It loads the config the same way `build` does — honouring `--config` and `$DES
 : "${DESVIO_WORKTREE:?run this with: desvio run start}"
 ```
 
-`exec` hands the script the process, so its exit status and its signals are its own. Tasks are deliberately not chained to `build`: assembling a build and installing one are different decisions, and you want the second on a different schedule from the first.
+A single task is `exec`ed, so its exit status and its signals are its own. A chain runs each in turn and stops at the first failure — packaging a tree whose gate never passed is worse than stopping. Every name is resolved before anything runs, so a typo in the last task costs you nothing. Arguments only make sense for one task, so naming several and passing arguments too is an error rather than a guess; `--` ends the name list if a task's own first argument is a bare word.
+
+`build` is not a task, so the whole path is two commands joined by the shell:
+
+```sh
+desvio build && desvio run package install
+```
+
+That is deliberate. `build` has its own flags and its own gate, and a `run` that special-cased the name `build` would shadow anyone's real `build.sh`.
 
 ## Tests
 

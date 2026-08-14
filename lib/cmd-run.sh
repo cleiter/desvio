@@ -8,10 +8,11 @@
 
 cmd_run_usage() {
   cat <<'EOF'
-usage: desvio run [<name>] [args...]
+usage: desvio run [<name>...] [args...]
 
-  <name>   a script <name>.sh sitting next to your desvio.conf. Everything
-           after it is passed through untouched.
+  <name>   a script <name>.sh sitting next to your desvio.conf. Several run in
+           the order you name them, and the first failure stops the chain.
+           After a single name, everything is passed through untouched.
 
 With no name, lists what is there.
 
@@ -29,6 +30,7 @@ where it was invoked from:
 
   desvio run package             # ./package.sh
   desvio run package --no-install
+  desvio build && desvio run package install
 EOF
 }
 
@@ -49,10 +51,24 @@ cmd_run() {
 
   load_config
   local dir; dir="$(dirname "$DESVIO_CONFIG_FILE")"
-  local name="${1:-}"
   local found; found="$(run_tasks "$dir")"
 
-  if [ -z "$name" ]; then
+  # Leading bare words are task names; the first flag ends the list and the rest
+  # belongs to the task. `--` ends it explicitly, for a task whose own first
+  # argument is a bare word.
+  local names=() count=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --) shift; break ;;
+      -*) break ;;
+      *)  names[$count]="$1"; count=$((count + 1)); shift ;;
+    esac
+  done
+
+  if [ "$count" -eq 0 ]; then
+    case "${1:-}" in
+      -*) die "unknown option: $1  (try: desvio help run)" ;;
+    esac
     if [ -z "$found" ]; then
       die "no tasks next to $DESVIO_CONFIG_FILE.
   A task is an executable <name>.sh in that directory. See: desvio help run"
@@ -62,32 +78,62 @@ cmd_run() {
     printf '\n'
     return 2
   fi
-  shift
 
-  # A bare name only. A path would make the same command mean different things
-  # from different directories, which is the problem this command exists to fix.
-  case "$name" in
-    -*)    die "unknown option: $name  (try: desvio help run)" ;;
-    */*|.|..) die "'$name' is a path, and run takes a bare name — a <name>.sh
+  # Which of several tasks would "$@" belong to? There is no honest answer, so
+  # refuse instead of guessing.
+  if [ "$count" -gt 1 ] && [ $# -gt 0 ]; then
+    die "arguments belong to one task, and you named $count: ${names[*]}
+  Run that one on its own to pass '$*'."
+  fi
+
+  # Resolve every name BEFORE running anything: a typo in the last task must not
+  # cost you the first one.
+  local scripts=() i=0 name script
+  while [ "$i" -lt "$count" ]; do
+    name="${names[$i]}"
+    # A bare name only. A path would make the same command mean different things
+    # from different directories, which is the problem this command exists to fix.
+    case "$name" in
+      */*|.|..) die "'$name' is a path, and run takes a bare name — a <name>.sh
   beside $DESVIO_CONFIG_FILE. To run a script somewhere else, run it directly." ;;
-  esac
-
-  local script="$dir/$name.sh"
-  if [ ! -f "$script" ]; then
-    die "no task '$name' — nothing at $script
+    esac
+    script="$dir/$name.sh"
+    if [ ! -f "$script" ]; then
+      die "no task '$name' — nothing at $script
 ${found:+
   There is:
 $(printf '%s\n' "$found" | sed 's/^/    /')}"
-  fi
-  [ -x "$script" ] || die "$script is not executable: chmod +x $script"
+    fi
+    [ -x "$script" ] || die "$script is not executable: chmod +x $script"
+    scripts[$i]="$script"
+    i=$((i + 1))
+  done
 
   # Absolute already — load_config put every path through config_relative.
   export DESVIO_REPO DESVIO_WORKTREE DESVIO_STATE DESVIO_MANIFEST \
          DESVIO_BRANCH DESVIO_NAME DESVIO_BASE DESVIO_REMOTE \
          DESVIO_CONFIG_FILE DESVIO_VERSION
 
-  log "run $name${*:+ $*}"
   cd "$dir" || die "cannot enter $dir"
-  # exec: the task owns the exit status and its own signals from here.
-  exec "$script" "$@"
+
+  local last=$((count - 1)) status
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    if [ "$count" -gt 1 ]; then
+      log "run ${names[$i]}  ($((i + 1))/$count)"
+    else
+      log "run ${names[$i]}${*:+ $*}"
+    fi
+    # The last one execs, so a single task — the common case — owns the exit
+    # status and its own signals exactly as it did before chaining existed.
+    if [ "$i" -eq "$last" ]; then
+      exec "${scripts[$i]}" "$@"
+    fi
+    status=0
+    "${scripts[$i]}" || status=$?
+    # Fail fast. Packaging a tree whose gate never passed, or installing a bundle
+    # that failed to build, is worse than stopping here.
+    [ "$status" -eq 0 ] || die "task '${names[$i]}' failed (exit $status) — stopped before ${names[$((i + 1))]}"
+    i=$((i + 1))
+  done
 }
