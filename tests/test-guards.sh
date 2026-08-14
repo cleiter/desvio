@@ -92,6 +92,27 @@ mkdir -p "$TEST_TMP/not-a-repo"
 assert_dies_with "not a git checkout" build
 
 # ---------------------------------------------------------------------------
+# Found by CI, not by hand: the macOS runner's TMPDIR sits under /var, which is a
+# symlink to /private/var. git registers a worktree under the resolved path, so
+# handing it the logical one on the rebuild produced
+#
+#   fatal: cannot force update the branch 'integration' used by worktree at ...
+#
+# First build fine, every rebuild dead. This test does not depend on TMPDIR being
+# symlinked — it makes its own link, so the case is covered everywhere.
+it "a build directory reached through a symlink can be rebuilt"
+fixture_new
+fixture_config
+manifest
+ln -s "$BUILD" "$TEST_TMP/link"
+
+run_desvio --config "$TEST_TMP/link/desvio.conf" build
+assert_eq 0 "$STATUS" "the first build works"
+run_desvio --config "$TEST_TMP/link/desvio.conf" build
+assert_eq 0 "$STATUS" "and so does the second"
+assert_contains "$OUT" "$(cd "$BUILD" && pwd -P)/build-tree" "the worktree is named by its resolved path"
+
+# ---------------------------------------------------------------------------
 it "no config at all explains where it looked"
 fixture_new
 BUILD="$TEST_TMP/empty"; mkdir -p "$BUILD"

@@ -25,7 +25,9 @@ task_env
 run_desvio run env
 
 assert_eq 0 "$STATUS" "the task ran"
-assert_contains "$OUT" "DESVIO_WORKTREE=$BUILD/build-tree" "worktree is absolute"
+# Physical, not just absolute: git registers a worktree under its resolved path,
+# so that is the one a task must be handed too. See physical_path in common.sh.
+assert_contains "$OUT" "DESVIO_WORKTREE=$(cd "$BUILD" && pwd -P)/build-tree" "worktree is absolute and resolved"
 assert_contains "$OUT" "DESVIO_REPO=$REPO" "repo is exported"
 assert_contains "$OUT" "DESVIO_STATE=$BUILD/state" "state is exported"
 assert_contains "$OUT" "DESVIO_MANIFEST=$BUILD/manifest.txt" "manifest is exported"

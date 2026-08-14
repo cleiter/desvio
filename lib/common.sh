@@ -67,6 +67,27 @@ config_relative() {
   esac
 }
 
+# The same path with every symlink resolved, because git stores a worktree under
+# its physical path. Hand it the logical one on the NEXT build and it does not
+# recognise the tree as the one it already registered:
+#
+#   fatal: cannot force update the branch 'x' used by worktree at '/private/...'
+#
+# So the first build works, every rebuild dies — and only for someone whose build
+# directory sits under a symlink, which on macOS includes anything in /tmp or
+# /var. Resolve the parent when the path itself does not exist yet: the worktree
+# is created by the very command that needs the resolved name.
+physical_path() {
+  local p="$1"
+  if [ -d "$p" ]; then
+    (cd "$p" && pwd -P)
+  elif [ -d "$(dirname "$p")" ]; then
+    printf '%s/%s' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
+  else
+    printf '%s' "$p"
+  fi
+}
+
 load_config() {
   local file
   file=$(find_config) || die "no desvio.conf found.
@@ -88,7 +109,7 @@ load_config() {
   DESVIO_BRANCH="${DESVIO_BRANCH:-desvio}"
   DESVIO_NAME="${DESVIO_NAME:-$DESVIO_BRANCH}"
   DESVIO_STATE="$(config_relative "${DESVIO_STATE:-state}")"
-  DESVIO_WORKTREE="$(config_relative "${DESVIO_WORKTREE:-build-tree}")"
+  DESVIO_WORKTREE="$(physical_path "$(config_relative "${DESVIO_WORKTREE:-build-tree}")")"
   DESVIO_MANIFEST="$(config_relative "${DESVIO_MANIFEST:-manifest.txt}")"
   DESVIO_AUTO_RESOLVE="${DESVIO_AUTO_RESOLVE:-1}"
   DESVIO_RESOLVER_MODEL="${DESVIO_RESOLVER_MODEL:-opus}"
