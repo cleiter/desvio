@@ -1,0 +1,29 @@
+# Branches merged into your build, in this order. `#` starts a comment; whatever
+# you write after a branch name is printed back in the build summary, so make it
+# the reason the line still exists — a PR number, "rejected upstream", "mine".
+#
+# ORDER MATTERS, and the rule is: the front is frozen, the back moves.
+#
+# Merges are resolved against everything already merged, so a branch's conflicts
+# are decided by what sits ABOVE it. Move a line and every line after it can
+# conflict differently, which throws away the recorded resolutions for all of
+# them. So append; do not insert.
+#
+#   front   branches that will never land upstream — rejected, or private to you.
+#           They are permanent, so pay their conflict cost once, at the bottom of
+#           the stack where nothing else disturbs them.
+#   middle  open pull requests, oldest first. As one lands, delete its line; the
+#           lines below shift down by one and only they re-resolve.
+#   back    whatever you started yesterday. Churn belongs where it disturbs the
+#           least, and a new branch has no recorded resolutions to lose anyway.
+#
+# Size is not the criterion. A large old branch is cheaper at the front than a
+# small new one, because it has already paid for its conflicts.
+#
+# Comment a line out instead of deleting it while a branch is in doubt: the order
+# survives and re-enabling costs one character.
+
+# ---- example ----
+# my-private-tweak            # never upstreaming this
+# fix-something               # PR #1234
+# new-thing-i-started-today   # no PR yet

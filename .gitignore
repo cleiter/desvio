@@ -1,0 +1,11 @@
+# Anything a build leaves behind. Keep a working directory out of the repo, but
+# ignore it here too — people will run desvio from a clone.
+build-tree/
+state/
+*.log
+daemon.pid
+desvio.conf
+manifest.txt
+!examples/**/desvio.conf
+!examples/**/manifest.txt
+.DS_Store

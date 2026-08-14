@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# desvio — keep a personal build of someone else's project.
+#
+# Merges the topic branches you name onto a fresh upstream, in a worktree of
+# your own checkout, and verifies the result. Your branches are never written to.
+#
+set -euo pipefail
+
+DESVIO_VERSION="0.1.0"
+
+# Follow symlinks so `ln -s .../bin/desvio /usr/local/bin/desvio` works.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  target=$(readlink "$SELF")
+  case "$target" in
+    /*) SELF="$target" ;;
+    *)  SELF="$(dirname "$SELF")/$target" ;;
+  esac
+done
+DESVIO_LIB="$(cd "$(dirname "$SELF")/../lib" && pwd)"
+DESVIO_HOME="${DESVIO_HOME:-$HOME/.desvio}"
+
+. "$DESVIO_LIB/common.sh"
+. "$DESVIO_LIB/resolve.sh"
+. "$DESVIO_LIB/cmd-build.sh"
+. "$DESVIO_LIB/cmd-init.sh"
+
+usage() {
+  cat <<'EOF'
+usage: desvio <command> [options]
+
+  build [<base>]   assemble every branch in the manifest onto <base> and verify
+  init [<repo>]    write a desvio.conf and manifest.txt here
+  help [<command>] this, or a command's own options
+
+options before the command:
+  --config <file>  which desvio.conf to use
+  --version
+
+Config lookup, first hit wins:
+  --config <file>, $DESVIO_CONFIG, ./desvio.conf, $DESVIO_HOME/desvio.conf
+
+Read the branch-order doctrine in the manifest that `desvio init` writes. It is
+the part people get wrong.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) shift; [ $# -gt 0 ] || die "--config needs a file"; DESVIO_CONFIG="$1" ;;
+    --version) printf 'desvio %s\n' "$DESVIO_VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+  shift
+done
+
+CMD="${1:-help}"
+[ $# -gt 0 ] && shift
+
+case "$CMD" in
+  build) cmd_build "$@" ;;
+  init)  cmd_init "$@" ;;
+  help)
+    case "${1:-}" in
+      build) cmd_build_usage ;;
+      *)     usage ;;
+    esac ;;
+  *) die "unknown command: $CMD  (try: desvio help)" ;;
+esac

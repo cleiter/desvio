@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- desvio — the amber route leaves the main road, swerves up, and runs its own
+       course above it. A detour, and the same shape as a branch off mainline.
+       Asymmetric on purpose: a symmetric over-and-back arc reads as an arch.
+       The coral pass sits slightly out of register behind it — the route you
+       came off, and the reason the mark looks printed rather than drawn. -->
+  <rect width="512" height="512" rx="114" fill="#14213D"/>
+  <g transform="rotate(-2 256 256)" fill="none" stroke-linecap="round">
+    <path d="M186 356 H446" stroke="#55648F" stroke-width="46"/>
+    <path d="M68 352 H172 C 228 352, 222 180, 278 180 H 442"
+          stroke="#E4572E" stroke-width="54" transform="translate(-22 26)"/>
+    <path d="M68 352 H172 C 228 352, 222 180, 278 180 H 442"
+          stroke="#FCA311" stroke-width="54"/>
+  </g>
+</svg>
