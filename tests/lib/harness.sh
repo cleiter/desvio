@@ -87,7 +87,11 @@ $OUT"
 # --prune` and default_base reads refs/remotes/origin/HEAD, so a fixture with no
 # real remote would skip the code that actually runs in anger.
 fixture_new() {
-  TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/desvio-test.XXXXXX")"
+  # Strip the trailing slash: the macOS runner's TMPDIR has one, and without this
+  # every fixture path carries a `//` that `cd` silently collapses — so $PWD stops
+  # matching $BUILD and fourteen assertions fail for a reason that is not desvio.
+  local tmproot="${TMPDIR:-/tmp}"
+  TEST_TMP="$(mktemp -d "${tmproot%/}/desvio-test.XXXXXX")"
   FIXTURE_ROOTS+=("$TEST_TMP")
 
   # Isolation. Without GIT_CONFIG_GLOBAL the developer's own rerere settings,
