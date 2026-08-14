@@ -14,7 +14,14 @@ Your topic branches are never written to.
 
 ```sh
 git clone https://github.com/cleiter/desvio.git
-ln -s "$PWD/desvio/bin/desvio" /usr/local/bin/desvio
+mkdir -p ~/.local/bin
+ln -s "$PWD/desvio/bin/desvio" ~/.local/bin/desvio
+```
+
+No root needed. If `~/.local/bin` is not already on your `PATH`, add it to your shell profile:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 bash 3.2 or newer, git, and — for automatic conflict resolution — [Claude Code](https://claude.com/claude-code) on your `PATH`. macOS and Linux.
