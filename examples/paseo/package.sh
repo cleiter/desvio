@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
 #
-# Package the build tree into a real Paseo.app that carries its own daemon.
+# Build the build tree into a real Paseo.app that carries its own daemon.
 #
-# This is the point of packaging: the app stops reading the build tree. The tree
-# becomes a build input, no process has its cwd inside it, and `desvio build`'s
-# live-daemon guard never fires again — so you can rebuild whenever you like and
-# install the result when it suits you.
+# This produces the bundle and stops. `desvio run install` puts it in place —
+# separate because the two fail for unrelated reasons, and retrying a two-second
+# copy should not cost a five-minute rebuild.
 #
-# Usage:  desvio run package [--no-install]
-# Env:    PASEO_APP_DEST=/Applications  PASEO_PACKAGE_VERSION=1.2.3
+# Usage:  desvio run package
+# Env:    PASEO_PACKAGE_VERSION=1.2.3  PASEO_FORK_NAME=mine
 #
 # Run `desvio build` FIRST. This packages whatever is in the tree; it does not
-# assemble branches.
+# assemble branches, and it does not check whether your gate ever passed.
 #
 set -euo pipefail
 
 : "${DESVIO_WORKTREE:?run this with: desvio run package}"
 BUILD_DIR="$DESVIO_WORKTREE"
 
-DEST_DIR="${PASEO_APP_DEST:-/Applications}"
 APP_NAME="Paseo.app"
 BUILT_APP="$BUILD_DIR/packages/desktop/release/mac-arm64/$APP_NAME"
-USER_DATA="$HOME/Library/Application Support/Paseo"
 
 # Version: upstream's, with this build marked as a prerelease of it.
 #
@@ -40,18 +37,15 @@ FORK_NAME="${PASEO_FORK_NAME:-${DESVIO_BRANCH:-mine}}"
 UPSTREAM_VERSION=$(node -p "require('$BUILD_DIR/package.json').version" 2>/dev/null || echo "0.0.0")
 BUILD_STAMP=$(date '+%y%m%d-%H%M')
 VERSION="${PASEO_PACKAGE_VERSION:-$UPSTREAM_VERSION-$FORK_NAME.$BUILD_STAMP}"
-INSTALL=1
 
 for arg in "$@"; do
   case "$arg" in
-    --no-install) INSTALL=0 ;;
-    -h|--help)    sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) printf 'unknown option: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
 
 log(){  printf '\n\033[1;34m[pkg]\033[0m %s\n' "$*"; }
-warn(){ printf '\033[1;33m[pkg]\033[0m %s\n' "$*"; }
 die(){  printf '\n\033[1;31m[pkg] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ -d "$BUILD_DIR" ] || die "no build tree at $BUILD_DIR — run desvio build first"
@@ -166,71 +160,20 @@ log "re-signing the whole bundle ad-hoc"
 codesign --force --deep --sign - "$BUILT_APP"
 codesign --verify --deep --strict "$BUILT_APP" || die "the bundle does not verify after re-signing"
 
-if [ "$INSTALL" != "1" ]; then
-  log "built (not installed): $BUILT_APP"
-  exit 0
-fi
-
-# ---------- install ----------
-if pgrep -f "$DEST_DIR/$APP_NAME/Contents/MacOS/Paseo" >/dev/null 2>&1; then
-  die "Paseo is running from $DEST_DIR. Quit it first — replacing a running
-  bundle leaves the live process reading files that no longer exist."
-fi
-
-# A daemon started from the tree owns port 6767 and would block the app's own.
-# Two daemons, one port: the app's silently loses.
-if lsof -nP -iTCP:6767 -sTCP:LISTEN -t >/dev/null 2>&1; then
-  DPID=$(lsof -nP -iTCP:6767 -sTCP:LISTEN -t | head -1)
-  DCWD=$(lsof -a -p "$DPID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
-  case "${DCWD:-}" in
-    "$BUILD_DIR"|"$BUILD_DIR"/*)
-      warn "a tree daemon (pid $DPID) holds 6767. The packaged app manages its own."
-      warn "Stop it first: PASEO_HOME=\$HOME/.paseo $BUILD_DIR/packages/cli/bin/paseo daemon stop" ;;
-  esac
-fi
-
-log "installing to $DEST_DIR/$APP_NAME"
-rm -rf "${DEST_DIR:?}/$APP_NAME"
-cp -Rc "$BUILT_APP" "$DEST_DIR/$APP_NAME" 2>/dev/null || cp -R "$BUILT_APP" "$DEST_DIR/$APP_NAME"
-
-# ---------- pin the desktop settings ----------
-# The packaged app uses the REAL userData dir — PASEO_HOME and PASEO_LISTEN do
-# not isolate it. Both migration flags must be pre-applied or coerceDocument
-# resets keepRunningAfterQuit to its default on first read.
-#
-# manageBuiltInDaemon TRUE here, the opposite of desktop.sh: for the dev app the
-# point is that it must never touch the real daemon; for the packaged app,
-# running its own bundled daemon IS the point.
-log "pinning $USER_DATA/desktop-settings.json"
-mkdir -p "$USER_DATA"
-cat >"$USER_DATA/desktop-settings.json" <<'JSON'
-{
-  "version": 1,
-  "settings": {
-    "releaseChannel": "stable",
-    "daemon": {
-      "manageBuiltInDaemon": true,
-      "keepRunningAfterQuit": true
-    }
-  },
-  "migrations": {
-    "legacyRendererSettingsImported": true,
-    "daemonStopOnQuitDefaultApplied": true
-  }
-}
-JSON
-
 BUILT_FROM=$(git -C "$BUILD_DIR" log -1 --format='%h %s' 2>/dev/null || echo unknown)
 
 cat <<EOF
 
-$(printf '\033[1;34m[pkg]\033[0m') installed $DEST_DIR/$APP_NAME
+$(printf '\033[1;34m[pkg]\033[0m') built $BUILT_APP
        version:    $VERSION   (upstream $UPSTREAM_VERSION)
        built from: $BUILT_FROM
 
-Launch it:  open -n "$DEST_DIR/$APP_NAME"
+The bundle survives a rebuild — release/ is gitignored, and desvio's clean does
+not use -x — so installing is a separate decision you can take whenever:
 
-The host registry lives in the same userData dir, so the hosts you already added
-are still there. The daemon this app starts is its own, on 6767, against
-\$HOME/.paseo — do not also run start.sh, or they fight over the port.
+  desvio run install
+
+Or the whole path in one go next time:
+
+  desvio build && desvio run package install
 EOF
