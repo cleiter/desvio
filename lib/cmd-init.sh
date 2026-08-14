@@ -14,7 +14,7 @@ cmd_init() {
 DESVIO_REPO="$repo"          # the upstream checkout your branches live in
 DESVIO_BRANCH="desvio"       # the disposable integration branch — never commit to it
 DESVIO_NAME="my build"       # what the summary calls it
-# DESVIO_BASE="origin/master"  # default: whatever the remote says its HEAD is
+# DESVIO_BASE="origin/main"  # default: whatever the remote says its HEAD is
 # DESVIO_WORKTREE="build-tree"
 # DESVIO_MANIFEST="manifest.txt"
 # DESVIO_RESOLVER_EFFORT="high"

@@ -12,7 +12,7 @@ cmd_build_usage() {
 usage: desvio build [<base>] [options]
 
   <base>            what to build on. Anything git resolves to a commit: a
-                    branch, a tag, a hash, origin/master~5. Defaults to the
+                    branch, a tag, a hash, origin/main~5. Defaults to the
                     remote's own default branch.
 
   --assemble-only   merge, then stop. No install, no gate.
@@ -24,7 +24,7 @@ upstream. The merges replay the same way; only the floor moves.
 
   desvio build                    # the remote's default branch
   desvio build v1.4.0             # a release tag
-  desvio build origin/master~10   # ten back
+  desvio build origin/main~10     # ten back
 EOF
 }
 

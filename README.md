@@ -102,6 +102,20 @@ For that first time, desvio runs Claude Code on the conflicted files. A conflict
 
 Turn it off with `desvio build --no-resolve` and resolve by hand; rerere records your resolution the same way. Replace it by defining `desvio_resolve_conflict` in the config.
 
+## What it writes to your checkout
+
+desvio does not clone. The build tree is a `git worktree` of `DESVIO_REPO`, so the tree's `.git` is a pointer file back into your checkout and everything below happens in your repo:
+
+- **The integration branch.** `refs/heads/$DESVIO_BRANCH` is created in your checkout — not in the build directory — and reset to the base commit on every build.
+- **A worktree registration** under `.git/worktrees/`.
+- **Objects.** Every commit, tree, and blob the assembly authors is written to your object database. The merges are real commits in your repo, reachable from the integration branch.
+- **`rerere.enabled` and `rerere.autoupdate`,** set to `true` in your `.git/config` on every build. Recorded resolutions accumulate in `.git/rr-cache`, which is shared by all worktrees of the checkout.
+- **Remote-tracking refs,** moved by the `git fetch --prune` at the start of each build.
+
+Never your topic branches: nothing commits to them, and nothing is pushed anywhere. That is what the snapshot in [Conflicts](#conflicts) guarantees.
+
+Two consequences worth knowing. Give each build directory its own `DESVIO_BRANCH` if you run more than one against a single checkout, or they will reset each other's integration branch out from under them. And to undo one completely, `git worktree remove <tree>` then `git branch -D <branch>` in the checkout — deleting the build directory alone leaves both behind.
+
 ## The gate is the point
 
 Assembly tells you nothing about whether the result works. Two branches that never touch the same line merge cleanly and can still be incoherent: upstream moves a shared helper, your branch calls the old one, and git has no opinion because the edits are 200 lines apart.
@@ -157,7 +171,7 @@ Two calls rather than one, deliberately: record the stamp only after the work su
 
 ```sh
 desvio build v1.4.0            # a release tag
-desvio build origin/master~10  # ten back
+desvio build origin/main~10    # ten back
 desvio build d012b6f07         # a specific commit
 ```
 
