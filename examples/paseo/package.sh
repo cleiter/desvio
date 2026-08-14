@@ -7,7 +7,7 @@
 # live-daemon guard never fires again — so you can rebuild whenever you like and
 # install the result when it suits you.
 #
-# Usage:  ./package.sh [--no-install]
+# Usage:  desvio run package [--no-install]
 # Env:    PASEO_APP_DEST=/Applications  PASEO_PACKAGE_VERSION=1.2.3
 #
 # Run `desvio build` FIRST. This packages whatever is in the tree; it does not
@@ -15,13 +15,8 @@
 #
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-. "$HERE/desvio.conf"
-case "${DESVIO_WORKTREE:-build-tree}" in
-  /*) BUILD_DIR="$DESVIO_WORKTREE" ;;
-  *)  BUILD_DIR="$HERE/${DESVIO_WORKTREE:-build-tree}" ;;
-esac
+: "${DESVIO_WORKTREE:?run this with: desvio run package}"
+BUILD_DIR="$DESVIO_WORKTREE"
 
 DEST_DIR="${PASEO_APP_DEST:-/Applications}"
 APP_NAME="Paseo.app"

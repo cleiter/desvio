@@ -25,12 +25,14 @@ DESVIO_HOME="${DESVIO_HOME:-$HOME/.desvio}"
 . "$DESVIO_LIB/resolve.sh"
 . "$DESVIO_LIB/cmd-build.sh"
 . "$DESVIO_LIB/cmd-init.sh"
+. "$DESVIO_LIB/cmd-run.sh"
 
 usage() {
   cat <<'EOF'
 usage: desvio <command> [options]
 
   build [<base>]   assemble every branch in the manifest onto <base> and verify
+  run [<name>]     run <name>.sh from your config directory, config loaded
   init [<repo>]    write a desvio.conf and manifest.txt here
   help [<command>] this, or a command's own options
 
@@ -63,10 +65,12 @@ CMD="${1:-help}"
 
 case "$CMD" in
   build) cmd_build "$@" ;;
+  run)   cmd_run "$@" ;;
   init)  cmd_init "$@" ;;
   help)
     case "${1:-}" in
       build) cmd_build_usage ;;
+      run)   cmd_run_usage ;;
       *)     usage ;;
     esac ;;
   *) die "unknown command: $CMD  (try: desvio help)" ;;

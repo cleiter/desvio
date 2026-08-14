@@ -6,7 +6,7 @@
 # Self-contained on purpose. It does not call the repo's own dev tooling, which
 # has its own reasons to change; your build must not be entangled with it.
 #
-# Usage:  ./desktop.sh [--no-seed]
+# Usage:  desvio run desktop [--no-seed]
 # Env:    PASEO_REAL_HOME  PASEO_REAL_PORT
 #         PASEO_FORK_DESKTOP_PORT (throwaway daemon, default 6769)
 #         PASEO_FORK_CDP_PORT     (host seeder, default 9333)
@@ -26,13 +26,8 @@
 #
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-. "$HERE/desvio.conf"
-case "${DESVIO_WORKTREE:-build-tree}" in
-  /*) BUILD_DIR="$DESVIO_WORKTREE" ;;
-  *)  BUILD_DIR="$HERE/${DESVIO_WORKTREE:-build-tree}" ;;
-esac
+: "${DESVIO_WORKTREE:?run this with: desvio run desktop}"
+BUILD_DIR="$DESVIO_WORKTREE"
 
 REAL_HOME="${PASEO_REAL_HOME:-$HOME/.paseo}"
 REAL_PORT="${PASEO_REAL_PORT:-6767}"
@@ -45,7 +40,7 @@ SEED=1
 for arg in "$@"; do
   case "$arg" in
     --no-seed)  SEED=0 ;;
-    -h|--help)  sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,13p' "$0"; exit 0 ;;
     *) printf 'unknown option: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -63,7 +58,7 @@ port_open() {
 [ -d "$BUILD_DIR/packages/desktop" ] || die "$BUILD_DIR is not a Paseo checkout"
 
 port_open "$REAL_PORT" || die "no daemon on 127.0.0.1:$REAL_PORT.
-  Start it with $HERE/start.sh --no-desktop. Do NOT switch on built-in
+  Start it with: desvio run start --no-desktop. Do NOT switch on built-in
   daemon management in the app to work around this — that starts a second,
   empty daemon and the app connects to it."
 

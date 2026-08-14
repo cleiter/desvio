@@ -177,6 +177,26 @@ desvio build d012b6f07         # a specific commit
 
 Use it to sit out a broken upstream, or to reproduce yesterday's build. The merges replay the same way; only the floor moves. The summary says how far behind you pinned.
 
+## Tasks
+
+A build is not the end of it: something has to start what came out, package it, install it. Those scripts belong to your project, not to desvio — but they all need the same facts about where the build is, and rediscovering them from `$0` is how a script ends up only working from one directory.
+
+Put an executable `<name>.sh` next to your `desvio.conf` and run it with:
+
+```sh
+desvio run start                 # ./start.sh
+desvio run package --no-install  # arguments pass straight through
+desvio run                       # lists what is there
+```
+
+It loads the config the same way `build` does — honouring `--config` and `$DESVIO_CONFIG` — sets the cwd to the config directory, and exports `DESVIO_WORKTREE`, `DESVIO_REPO`, `DESVIO_STATE`, `DESVIO_MANIFEST`, `DESVIO_BRANCH`, `DESVIO_NAME`, `DESVIO_BASE`, `DESVIO_REMOTE`, `DESVIO_CONFIG_FILE` and `DESVIO_VERSION`, every path absolute. So the whole of a task's preamble is:
+
+```sh
+: "${DESVIO_WORKTREE:?run this with: desvio run start}"
+```
+
+`exec` hands the script the process, so its exit status and its signals are its own. Tasks are deliberately not chained to `build`: assembling a build and installing one are different decisions, and you want the second on a different schedule from the first.
+
 ## Known sharp edges
 
 - **A stale rerere resolution can be wrong.** rerere matches on conflict text, so a resolution recorded from one merge can replay into a different one. desvio refuses to commit a file that still holds conflict markers, but a resolution that dropped a side leaves no markers to find. The gate is what catches it. To drop one: `git rerere forget <path>` during the merge.

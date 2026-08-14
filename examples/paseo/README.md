@@ -23,13 +23,13 @@ Keep this directory outside the checkout. It holds the build tree, the state dir
 
 ## The scripts
 
-Both read `desvio.conf` for the build tree, so they follow whatever you configured.
+Run them with `desvio run <name>`, which loads `desvio.conf` and exports it — so each script reads `$DESVIO_WORKTREE` and needs no idea where it was invoked from. `desvio run` on its own lists them.
 
-**`start.sh`** swaps the daemon on your real `~/.paseo` for the one in the build tree, then launches the desktop app against it. Stopping a daemon kills every agent process — conversations resume on the next prompt, but a turn in flight right now is lost, so it lists what it is about to kill and asks. `--no-desktop` starts only the daemon, `--yes` skips the prompt.
+**`start.sh`** (`desvio run start`) swaps the daemon on your real `~/.paseo` for the one in the build tree, then launches the desktop app against it. Stopping a daemon kills every agent process — conversations resume on the next prompt, but a turn in flight right now is lost, so it lists what it is about to kill and asks. `--no-desktop` starts only the daemon, `--yes` skips the prompt.
 
-**`desktop.sh`** launches only the desktop app, against the daemon already on `127.0.0.1:6767`. `npm run dev:desktop` cannot do this: it uses the checkout's `.dev/user-data`, where `manageBuiltInDaemon` defaults to true, so the app starts its own empty daemon and connects to that instead. The symptom is a sidebar of skeletons that never resolve and nothing in the log to explain it. So this script uses a throwaway home, pins the desktop settings, asserts that Electron agrees about the userData path, and seeds the host entry over CDP.
+**`desktop.sh`** (`desvio run desktop`) launches only the desktop app, against the daemon already on `127.0.0.1:6767`. `npm run dev:desktop` cannot do this: it uses the checkout's `.dev/user-data`, where `manageBuiltInDaemon` defaults to true, so the app starts its own empty daemon and connects to that instead. The symptom is a sidebar of skeletons that never resolve and nothing in the log to explain it. So this script uses a throwaway home, pins the desktop settings, asserts that Electron agrees about the userData path, and seeds the host entry over CDP.
 
-**`package.sh`** builds `Paseo.app` with its own bundled daemon and installs it. After this the app stops reading the build tree, so you can rebuild whenever you like and install when it suits you. Three things in it are worth knowing before you copy it elsewhere:
+**`package.sh`** (`desvio run package`) builds `Paseo.app` with its own bundled daemon and installs it. After this the app stops reading the build tree, so you can rebuild whenever you like and install when it suits you. Three things in it are worth knowing before you copy it elsewhere:
 
 - The version becomes `<upstream>-<name>.<yymmdd-HHMM>`, a semver prerelease of upstream's version. `260814-0750` is one alphanumeric identifier because semver forbids leading zeroes in a numeric one, so `.0750` would be invalid.
 - That version ranks *below* upstream's stable release of the same number, so a working updater would replace your build with stock Paseo. What prevents it is that `-c.mac.target=dir` publishes nothing and therefore writes no `app-update.yml`. The script asserts the file is absent rather than assuming it.

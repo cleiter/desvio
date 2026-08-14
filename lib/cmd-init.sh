@@ -47,7 +47,9 @@ desvio_verify() {
   in_tree npm run lint
 }
 
-# Printed under the summary.
+# Printed under the summary. A good place to name the tasks you keep next to this
+# file: an executable start.sh here is \`desvio run start\`, with the config
+# already loaded and exported. See: desvio help run
 # desvio_next_steps() {
 #   cat <<TXT
 # Run it:

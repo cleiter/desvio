@@ -9,21 +9,19 @@
 # the session id is preserved and the next prompt resumes them — but a turn that
 # is in flight right now is lost. That is why this asks first.
 #
-# Usage:  ./start.sh [--no-desktop] [--yes]
+# Usage:  desvio run start [--no-desktop] [--yes]
 # Env:    PASEO_REAL_HOME=/path
 #
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-. "$HERE/desvio.conf"
-case "${DESVIO_WORKTREE:-build-tree}" in
-  /*) BUILD_DIR="$DESVIO_WORKTREE" ;;
-  *)  BUILD_DIR="$HERE/${DESVIO_WORKTREE:-build-tree}" ;;
-esac
+: "${DESVIO_WORKTREE:?run this with: desvio run start}"
+BUILD_DIR="$DESVIO_WORKTREE"
+# Its sibling task. Handing off with exec rather than `desvio run desktop` keeps
+# this working when desvio itself was invoked by path and is not on PATH.
+DESKTOP_TASK="$(dirname "$DESVIO_CONFIG_FILE")/desktop.sh"
 
 REAL_HOME="${PASEO_REAL_HOME:-$HOME/.paseo}"
-DAEMON_LOG="$HERE/daemon-out.log"
+DAEMON_LOG="$DESVIO_STATE/daemon-out.log"
 BRANCH="${DESVIO_BRANCH:-mine}"
 WANT_DESKTOP=1
 ASSUME_YES=0
@@ -76,7 +74,7 @@ fi
 
 if [ -n "${CURRENT_CWD:-}" ] && serves_build_tree "$CURRENT_CWD"; then
   log "the daemon already serves $BUILD_DIR — leaving it alone"
-  if [ "$WANT_DESKTOP" = 1 ]; then exec "$HERE/desktop.sh"; fi
+  if [ "$WANT_DESKTOP" = 1 ]; then exec "$DESKTOP_TASK"; fi
   exit 0
 fi
 
@@ -121,7 +119,7 @@ log "starting $BRANCH from $BUILD_DIR (log: $DAEMON_LOG)"
 (
   cd "$BUILD_DIR"
   PASEO_HOME="$REAL_HOME" nohup npm start >> "$DAEMON_LOG" 2>&1 &
-  echo $! > "$HERE/daemon.pid"
+  echo $! > "$DESVIO_STATE/daemon.pid"
 )
 
 log "waiting for it to come up"
@@ -147,13 +145,13 @@ if [ "$WANT_DESKTOP" = 1 ]; then
   log "launching the desktop app against it"
   # Metro and Electron resolve their root at startup, so the UI must be
   # restarted too or it keeps serving the previous tree.
-  exec "$HERE/desktop.sh"
+  exec "$DESKTOP_TASK"
 fi
 
 cat <<EOF
 
 Desktop skipped. Launch it yourself with:
-  $HERE/desktop.sh
+  desvio run desktop
 
 Go back to the released app:
   PASEO_HOME=$REAL_HOME "$PASEO" daemon stop
