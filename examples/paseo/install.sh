@@ -86,10 +86,16 @@ fi
 if lsof -nP -iTCP:6767 -sTCP:LISTEN -t >/dev/null 2>&1; then
   DPID=$(lsof -nP -iTCP:6767 -sTCP:LISTEN -t | head -1)
   DCWD=$(lsof -a -p "$DPID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  # Not fatal — installing is copying a bundle, and you may well be doing it
+  # while the old app runs. But having gone and looked up who holds the port,
+  # say so in every case rather than only the one we can name.
   case "${DCWD:-}" in
     "$BUILD_DIR"|"$BUILD_DIR"/*)
       warn "a tree daemon (pid $DPID) holds 6767. The packaged app manages its own."
       warn "Stop it first: PASEO_HOME=\$HOME/.paseo $BUILD_DIR/packages/cli/bin/paseo daemon stop" ;;
+    *)
+      warn "something already holds 6767 (pid $DPID, cwd ${DCWD:-unknown})."
+      warn "The app starts its own daemon on that port and will silently lose to it." ;;
   esac
 fi
 
