@@ -235,7 +235,13 @@ cmd_build() {
 
 # ---------- guards ----------
 build_guards() {
-  if [ -e "$DESVIO_WORKTREE/.git/MERGE_HEAD" ] || [ -n "$(gitw ls-files -u 2>/dev/null)" ]; then
+  # Ask git, do not stat a path: .git in a linked worktree is a FILE, so
+  # $DESVIO_WORKTREE/.git/MERGE_HEAD can never exist and the test is dead. That
+  # matters most in the case this guard exists for — a merge you resolved and
+  # staged but have not committed has no unmerged entries either, so a dead
+  # MERGE_HEAD test would fall through to the reset --hard below and delete the
+  # resolution this very message tells you to make.
+  if gitw rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || [ -n "$(gitw ls-files -u 2>/dev/null)" ]; then
     die "a merge is in progress at $DESVIO_WORKTREE. Finish it:
     cd $DESVIO_WORKTREE
     git status                      # see the conflicted files
