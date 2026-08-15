@@ -50,7 +50,13 @@ find_config() {
     # resolved against this one's directory, and `desvio run` cd's into that
     # directory before running a task — so a config named relatively would
     # leave every derived path pointing somewhere that no longer exists.
-    printf '%s/%s' "$(cd "$(dirname "$DESVIO_CONFIG")" && pwd -P)" "$(basename "$DESVIO_CONFIG")"
+    #
+    # Absolute, NOT physical. `pwd -P` here would rewrite the whole config's
+    # world: on macOS $TMPDIR is /var/folders/…, a symlink to /private/var, so
+    # every path desvio reports and exports would come back spelled differently
+    # from the one you gave it. Symlink resolution belongs to physical_path, and
+    # only to the worktree, because that is the one place git demands it.
+    printf '%s/%s' "$(cd "$(dirname "$DESVIO_CONFIG")" && pwd)" "$(basename "$DESVIO_CONFIG")"
     return 0
   fi
   if [ -f "./desvio.conf" ]; then
