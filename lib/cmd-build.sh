@@ -434,18 +434,24 @@ $(printf '    %s\n' "${stray[@]}")
 
 # Never commit a conflict marker. rerere replays a resolution recorded from a
 # DIFFERENT merge, so trust it exactly as far as the file content proves.
+#
+# NUL-delimited, because this check must not fail OPEN. Without -z, git QUOTES
+# any path containing a space or a newline ("a b.ts" comes back with the quotes
+# in it), the `[ -f ]` test below then misses the file, `continue` fires, and a
+# staged conflict marker sails through the one assertion meant to catch it.
 assert_no_markers() {
-  local topic="$1" dirty
-  # `|| true` twice on purpose: grep exits 1 when it finds nothing, which is the
-  # GOOD case, and under `set -e` a bare assignment from a failing command
-  # substitution kills the script with no message at all.
-  dirty=$(gitw diff --cached --name-only |
-    while read -r f; do
-      [ -f "$DESVIO_WORKTREE/$f" ] || continue
-      grep -lE '^(<<<<<<<|>>>>>>>)' "$DESVIO_WORKTREE/$f" 2>/dev/null || true
-    done) || true
-  [ -z "$dirty" ] || die "'$topic': conflict markers survived into the staged tree:
-$(printf '    %s\n' $dirty)
+  local topic="$1" f
+  local -a dirty; dirty=()
+  while IFS= read -r -d '' f; do
+    [ -f "$DESVIO_WORKTREE/$f" ] || continue
+    # grep exits 1 when it finds nothing, which is the GOOD case, and under
+    # `set -e` that would kill the script with no message at all.
+    if grep -qE '^(<<<<<<<|>>>>>>>)' "$DESVIO_WORKTREE/$f" 2>/dev/null; then
+      dirty+=("$f")
+    fi
+  done < <(gitw diff --cached --name-only -z)
+  [ "${#dirty[@]}" -eq 0 ] || die "'$topic': conflict markers survived into the staged tree:
+$(printf '    %s\n' "${dirty[@]}")
   Nothing was committed. Tree is at $DESVIO_WORKTREE."
 }
 

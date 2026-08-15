@@ -203,15 +203,20 @@ manifest() {
 # A stand-in for the agent: keeps both sides and removes every marker. Emitted as
 # config text so a test can append it to desvio.conf. No test may ever reach the
 # real resolver — it costs money and is not deterministic.
+#
+# NUL-delimited, like the code it stands in for. `for f in $(...)` word-splits,
+# so a conflicted "my file.txt" becomes "my" and "file.txt" — and this helper is
+# what tests/test-paths.sh uses to prove desvio handles such names, so a helper
+# that could not handle them would fail the test for its own reasons.
 resolver_keep_both() {
   cat <<'CONF'
 desvio_resolve_conflict() {
   local f
-  for f in $(gitw diff --name-only --diff-filter=U); do
+  while IFS= read -r -d '' f; do
     sed -e '/^<<<<<<</d' -e '/^=======$/d' -e '/^>>>>>>>/d' \
       "$DESVIO_WORKTREE/$f" > "$DESVIO_WORKTREE/$f.resolved"
     mv "$DESVIO_WORKTREE/$f.resolved" "$DESVIO_WORKTREE/$f"
-  done
+  done < <(gitw diff --name-only --diff-filter=U -z)
   return 0
 }
 CONF

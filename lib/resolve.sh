@@ -34,8 +34,21 @@ resolve_conflict() {
 }
 
 resolve_with_claude() {
-  local topic="$1" subject="$2" files left
-  files=$(gitw diff --name-only --diff-filter=U)
+  local topic="$1" subject="$2" files f
+  # An array as well as the text block: the block is what the prompt reads, the
+  # array is what the marker check below greps. A path with a space in it must
+  # not become two arguments there, or the check passes on a file it never read.
+  local -a paths; paths=()
+  while IFS= read -r -d '' f; do
+    paths+=("$f")
+  done < <(gitw diff --name-only --diff-filter=U -z)
+  # Under bash 3.2 with `set -u`, expanding an empty array is an abort, not an
+  # empty string — so check before, not after.
+  [ "${#paths[@]}" -gt 0 ] || {
+    warn "no conflicted files to resolve"
+    return 1
+  }
+  files=$(printf '%s\n' "${paths[@]}")
 
   command -v claude >/dev/null 2>&1 || {
     warn "no 'claude' on PATH — cannot auto-resolve"
@@ -43,7 +56,7 @@ resolve_with_claude() {
   }
 
   log "resolving with $DESVIO_RESOLVER_MODEL at $DESVIO_RESOLVER_EFFORT effort (no shell, files only)"
-  printf '       %s\n' $files
+  printf '       %s\n' "${paths[@]}"
 
   # Read/Edit/Write/Grep/Glob are enough to fix conflict markers, and all of them
   # are confined to the working directory. Everything that could reach a ref or
@@ -88,10 +101,15 @@ on its own line." \
   ) | tee "$DESVIO_STATE/resolve-$topic.log" | sed 's/^/       │ /'
 
   # The agent's own verdict is a hint. Markers are the check.
-  left=$(cd "$DESVIO_WORKTREE" && grep -lE '^(<<<<<<<|>>>>>>>)' -- $files 2>/dev/null || true)
-  if [ -n "$left" ]; then
+  local -a left; left=()
+  for f in "${paths[@]}"; do
+    if grep -qE '^(<<<<<<<|>>>>>>>)' "$DESVIO_WORKTREE/$f" 2>/dev/null; then
+      left+=("$f")
+    fi
+  done
+  if [ "${#left[@]}" -gt 0 ]; then
     warn "conflict markers still present in:"
-    printf '       %s\n' $left
+    printf '       %s\n' "${left[@]}"
     return 1
   fi
   return 0
