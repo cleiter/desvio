@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # desvio init — write a desvio.conf and a manifest.txt into the current directory.
 
 cmd_init() {

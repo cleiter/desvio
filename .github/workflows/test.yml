@@ -18,6 +18,23 @@ jobs:
       - name: syntax
         run: bash -n bin/desvio lib/*.sh examples/paseo/*.sh tests/run.sh tests/lib/harness.sh
 
+      # `bash -n` only parses. It would not have caught a single one of the
+      # bugs this gate exists for — the unquoted expansions that word-split on
+      # a filename with a space, or a `cd` whose failure is ignored right
+      # before an agent runs in the directory it failed to enter.
+      - name: shellcheck
+        run: |
+          # Install only if the runner image does not already carry it, rather
+          # than assuming either way — the images change without notice.
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            if [ "$RUNNER_OS" = macOS ]; then brew install shellcheck
+            else sudo apt-get update && sudo apt-get install -y shellcheck
+            fi
+          fi
+          shellcheck --version
+          shellcheck -S warning bin/desvio lib/*.sh examples/paseo/*.sh \
+            tests/*.sh tests/lib/harness.sh
+
       - name: versions
         run: bash --version | head -1; git --version
 

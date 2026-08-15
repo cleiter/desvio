@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Conflict resolution.
 #
 # A conflict during assembly is never a question about YOUR branch. The topic is

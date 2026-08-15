@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # desvio build — assemble every branch in the manifest onto a fresh base.
 #
 # This is git.git's `seen` workflow. Merge (not cherry-pick) because a merge

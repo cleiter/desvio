@@ -49,6 +49,7 @@ EOF
 }
 
 while [ $# -gt 0 ]; do
+  # shellcheck disable=SC2034  # DESVIO_CONFIG is read by find_config in lib/common.sh
   case "$1" in
     --config) shift; [ $# -gt 0 ] || die "--config needs a file"; DESVIO_CONFIG="$1" ;;
     --version) printf 'desvio %s\n' "$DESVIO_VERSION"; exit 0 ;;

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers. Sourced by bin/desvio before any subcommand.
 #
 # Everything here is also part of the hook API: a desvio.conf hook may call
@@ -7,6 +8,7 @@ B=$'\033[1m'; DIM=$'\033[2m'; GRN=$'\033[1;32m'; YEL=$'\033[1;33m'; RED=$'\033[1
 BLU=$'\033[1;34m'; OFF=$'\033[0m'
 
 # No colour when stdout is not a terminal, so piped output and CI logs stay clean.
+# shellcheck disable=SC2034  # read by cmd-build.sh's summary, a separate file
 if [ ! -t 1 ]; then
   B=""; DIM=""; GRN=""; YEL=""; RED=""; BLU=""; OFF=""
 fi
@@ -160,6 +162,7 @@ default_base() {
 #
 #   stamp_changed deps package-lock.json || return 0
 #   npm ci && stamp_write deps package-lock.json
+#
 # Hash each input's NAME and existence alongside its content, not the raw
 # concatenation. `cat a b` cannot tell "a grew a line that b lost" from "nothing
 # moved", and — the one that actually bites — `cat missing 2>/dev/null` produces

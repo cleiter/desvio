@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Test harness. Sourced by every tests/test-*.sh.
 #
 # Plain bash on purpose: desvio installs with a symlink and needs nothing but
@@ -125,7 +126,7 @@ fixture_new() {
   git init -q --bare -b main "$ORIGIN"
   git init -q -b main "$SEED"
   (
-    cd "$SEED"
+    cd "$SEED" || exit 1
     printf 'one\n'    > file.txt
     printf 'shared\n' > shared.txt
     git add -A && git commit -qm "base: initial"
@@ -158,7 +159,7 @@ trap fixture_cleanup EXIT
 # upstream_commit <file> <line> <subject> — move origin/main forward.
 upstream_commit() {
   (
-    cd "$SEED"
+    cd "$SEED" || exit 1
     printf '%s\n' "$2" >> "$1"
     git add -A && git commit -qm "$3"
     git push -q origin main
@@ -190,6 +191,7 @@ EOF
   if [ $# -gt 0 ]; then printf '%s\n' "$@" >> "$BUILD/desvio.conf"; fi
   : > "$BUILD/manifest.txt"
   export DESVIO_CONFIG="$BUILD/desvio.conf"
+  # shellcheck disable=SC2034  # read by the tests/test-*.sh that source this
   WORKTREE="$BUILD/build-tree"
 }
 

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # desvio run — run a script that lives beside the config, with the config loaded.
 #
 # A build is not the end of the story: something has to start what came out,
