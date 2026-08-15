@@ -130,21 +130,41 @@ log "starting $BRANCH from $BUILD_DIR (log: $DAEMON_LOG)"
   echo $! > "$DESVIO_STATE/daemon.pid"
 )
 
+# Everything below can fail, and by this point the user's real daemon has
+# already been stopped. Failing without taking the half-started one down with us
+# leaves 6767 held by a process nobody is managing, and the recovery
+# instructions at the bottom of this file assume that has not happened.
+kill_spawned() {
+  local pid
+  pid=$(cat "$DESVIO_STATE/daemon.pid" 2>/dev/null || true)
+  [ -n "$pid" ] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  warn "stopping the daemon this script started (pid $pid)"
+  # npm start spawns node as a child, so this may leave that behind. Say so
+  # rather than implying the port is definitely free again.
+  kill "$pid" 2>/dev/null ||
+    warn "could not stop pid $pid — kill it by hand before retrying"
+}
+
 log "waiting for it to come up"
 for _ in $(seq 1 60); do
   if run_cli daemon status >/dev/null 2>&1; then break; fi
   sleep 1
 done
 
-run_cli daemon status >/dev/null 2>&1 ||
+run_cli daemon status >/dev/null 2>&1 || {
+  kill_spawned
   die "daemon did not come up within 60s — read $DAEMON_LOG"
+}
 
 # Prove it is OUR build serving, not a survivor or a desktop-managed daemon.
 NEW_PID=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$PIDFILE" | head -1)
 NEW_CWD=$(lsof -a -p "$NEW_PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
-serves_build_tree "$NEW_CWD" ||
+serves_build_tree "$NEW_CWD" || {
+  kill_spawned
   die "a daemon is up (pid $NEW_PID) but serves '$NEW_CWD', not the build tree.
   Something else won the port. Read $DAEMON_LOG."
+}
 
 log "daemon up — pid $NEW_PID, serving $BUILD_DIR"
 
