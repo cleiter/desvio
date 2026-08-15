@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: syntax
-        run: bash -n bin/desvio lib/*.sh examples/paseo/*.sh tests/run.sh tests/lib/harness.sh
+        run: bash -n bin/desvio lib/*.sh examples/paseo/*.sh tests/*.sh tests/lib/harness.sh
 
       # `bash -n` only parses. It would not have caught a single one of the
       # bugs this gate exists for — the unquoted expansions that word-split on
