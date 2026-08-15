@@ -44,7 +44,11 @@ in_tree() { ( cd "$DESVIO_WORKTREE" && "$@" ); }
 find_config() {
   if [ -n "${DESVIO_CONFIG:-}" ]; then
     [ -f "$DESVIO_CONFIG" ] || die "no config at \$DESVIO_CONFIG: $DESVIO_CONFIG"
-    printf '%s' "$DESVIO_CONFIG"
+    # Absolute, like the ./desvio.conf branch below. Every other path is
+    # resolved against this one's directory, and `desvio run` cd's into that
+    # directory before running a task — so a config named relatively would
+    # leave every derived path pointing somewhere that no longer exists.
+    printf '%s/%s' "$(cd "$(dirname "$DESVIO_CONFIG")" && pwd -P)" "$(basename "$DESVIO_CONFIG")"
     return 0
   fi
   if [ -f "./desvio.conf" ]; then
@@ -103,6 +107,9 @@ load_config() {
 
   [ -n "${DESVIO_REPO:-}" ] || die "DESVIO_REPO is not set in $file — it must point at the upstream checkout"
   DESVIO_REPO="${DESVIO_REPO/#\~/$HOME}"
+  # Relative to the CONFIG, like DESVIO_STATE and the rest — not to whatever
+  # directory you happened to run desvio from.
+  DESVIO_REPO="$(config_relative "$DESVIO_REPO")"
   [ -d "$DESVIO_REPO/.git" ] || die "DESVIO_REPO is not a git checkout: $DESVIO_REPO"
 
   DESVIO_REMOTE="${DESVIO_REMOTE:-origin}"

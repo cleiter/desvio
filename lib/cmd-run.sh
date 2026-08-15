@@ -109,7 +109,9 @@ $(printf '%s\n' "$found" | sed 's/^/    /')}"
     i=$((i + 1))
   done
 
-  # Absolute already — load_config put every path through config_relative.
+  # Absolute already — load_config resolves the config to an absolute path
+  # first, then puts every path including DESVIO_REPO through config_relative.
+  # That is what makes the `cd` below safe.
   export DESVIO_REPO DESVIO_WORKTREE DESVIO_STATE DESVIO_MANIFEST \
          DESVIO_BRANCH DESVIO_NAME DESVIO_BASE DESVIO_REMOTE \
          DESVIO_CONFIG_FILE DESVIO_VERSION
