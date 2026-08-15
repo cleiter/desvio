@@ -99,9 +99,40 @@ if lsof -nP -iTCP:6767 -sTCP:LISTEN -t >/dev/null 2>&1; then
   esac
 fi
 
+#
+# Copy first, delete last. The copy is the slow part and the part that fails —
+# a full disk, a permission you do not have, an external volume that went away —
+# and doing it after the `rm` means every one of those leaves you with no app at
+# all. Stage beside the target, then swap with two renames, which are atomic and
+# instant because they are on the same filesystem.
 log "installing $VERSION to $DEST_DIR/$APP_NAME"
-rm -rf "${DEST_DIR:?}/$APP_NAME"
-cp -Rc "$BUILT_APP" "$DEST_DIR/$APP_NAME" 2>/dev/null || cp -R "$BUILT_APP" "$DEST_DIR/$APP_NAME"
+STAGE="$DEST_DIR/.$APP_NAME.incoming.$$"
+PREVIOUS="$DEST_DIR/.$APP_NAME.previous.$$"
+trap 'rm -rf "$STAGE"' EXIT
+
+# -Rc clones on APFS: near-instant, no extra space. Falls back for other filesystems.
+cp -Rc "$BUILT_APP" "$STAGE" 2>/dev/null || cp -R "$BUILT_APP" "$STAGE" ||
+  die "could not stage the bundle in $DEST_DIR — $DEST_DIR/$APP_NAME is untouched.
+  Usually a full disk or a directory you cannot write to."
+
+# A copy that returned 0 having produced something unrunnable is the case worth
+# catching here, while the old app is still in place to fall back on.
+[ -x "$STAGE/Contents/MacOS/Paseo" ] ||
+  die "the staged bundle has no executable at Contents/MacOS/Paseo.
+  $DEST_DIR/$APP_NAME is untouched. The bundle at $BUILT_APP looks broken —
+  rebuild it with: desvio run package"
+
+if [ -e "$DEST_DIR/$APP_NAME" ]; then
+  mv "$DEST_DIR/$APP_NAME" "$PREVIOUS" ||
+    die "could not move the existing app aside — nothing was changed."
+fi
+if ! mv "$STAGE" "$DEST_DIR/$APP_NAME"; then
+  # Put the old one back rather than leaving the slot empty. `if`, not `&&`:
+  # under `set -e` a false test as a bare command would exit before the die.
+  if [ -e "$PREVIOUS" ]; then mv "$PREVIOUS" "$DEST_DIR/$APP_NAME"; fi
+  die "could not move the new bundle into place — the previous app was restored."
+fi
+rm -rf "$PREVIOUS"
 
 # ---------- pin the desktop settings ----------
 # The packaged app uses the REAL userData dir — PASEO_HOME and PASEO_LISTEN do
