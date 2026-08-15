@@ -162,9 +162,11 @@ cmd_build() {
         die "merge of '$b' failed without conflicts — inspect $DESVIO_WORKTREE"
       elif [ "$DESVIO_AUTO_RESOLVE" = "1" ]; then
         refs_before=$(snapshot_refs)
+        snapshot_conflicted
         if resolve_conflict "$b" "${SUBJECTS[$i]}"; then
           assert_refs_unchanged "$refs_before"
-          gitw add -A
+          assert_resolver_scope "$b"
+          gitw add -- "${CONFLICTED[@]}"
           [ -z "$(gitw ls-files -u)" ] ||
             die "'$b': the resolver left unmerged entries. Tree is at $DESVIO_WORKTREE."
           assert_no_markers "$b"
@@ -327,6 +329,44 @@ assert_refs_unchanged() {
   fi
   warn "new branches appeared during the merge — none of yours moved"
   return 0
+}
+
+# ---------- resolver scope ----------
+#
+# The resolver is TOLD to edit only the conflicted files. An instruction in a
+# prompt is not a boundary, so record the conflict set before it runs and check
+# it after. Without this, `git add -A` would stage an adjacent file the agent
+# helpfully "fixed" on the way past, and the merge commit would carry an edit
+# nobody reviewed and no conflict asked for.
+#
+# NUL-delimited: a path with a space or a newline in it must not split into two.
+snapshot_conflicted() {
+  local p
+  CONFLICTED=()
+  while IFS= read -r -d '' p; do
+    CONFLICTED+=("$p")
+  done < <(gitw diff --name-only --diff-filter=U -z)
+}
+
+assert_resolver_scope() {
+  local topic="$1" p c known
+  local -a stray; stray=()
+  [ "${#CONFLICTED[@]}" -gt 0 ] || return 0
+  while IFS= read -r -d '' p; do
+    known=0
+    for c in "${CONFLICTED[@]}"; do
+      if [ "$p" = "$c" ]; then known=1; break; fi
+    done
+    [ "$known" = 1 ] || stray+=("$p")
+  done < <(
+    gitw diff --name-only -z
+    gitw ls-files --others --exclude-standard -z
+  )
+  [ "${#stray[@]}" -eq 0 ] || die "'$topic': the resolver touched files outside the conflict set:
+$(printf '    %s\n' "${stray[@]}")
+  It was asked to edit only the conflicted files. Nothing has been staged or
+  committed. Look at the tree at $DESVIO_WORKTREE, and at the transcript in
+  $DESVIO_STATE/resolve-$topic.log, before re-running."
 }
 
 # Never commit a conflict marker. rerere replays a resolution recorded from a
