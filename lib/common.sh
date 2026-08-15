@@ -164,6 +164,16 @@ stamp_write() {
   stamp_digest "$name" "$@" > "$DESVIO_STATE/stamp-$name"
 }
 
+# resolver_log <topic> — where a resolver transcript for that branch lives.
+#
+# One helper rather than the same expression in three places, because all three
+# have to agree or the message tells you to open a file that is not there.
+# Slashes become dashes: `feature/foo` is the commonest branch convention there
+# is, and a slash in a filename is a directory that does not exist, so `tee`
+# fails and the transcript is lost — on the error path, where it is the only
+# record of what the resolver was thinking when it gave up.
+resolver_log() { printf '%s/resolve-%s.log' "$DESVIO_STATE" "${1//\//-}"; }
+
 # ---------- hooks ----------
 # has_hook <name> — is it defined by the config?
 has_hook() { declare -f "$1" >/dev/null 2>&1; }

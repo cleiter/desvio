@@ -201,7 +201,7 @@ $(printf '    %s\n' "${MISSING[@]}")
             continue
           fi
           conflict_death "$b" "the resolver could not finish it.
-  Transcript: $DESVIO_STATE/resolve-$b.log"
+  Transcript: $(resolver_log "$b")"
         fi
       elif [ "$keep_going" = 1 ]; then
         # --keep-going means what its help text says: report the branch and carry
@@ -443,7 +443,7 @@ assert_resolver_scope() {
 $(printf '    %s\n' "${stray[@]}")
   It was asked to edit only the conflicted files. Nothing has been staged or
   committed. Look at the tree at $DESVIO_WORKTREE, and at the transcript in
-  $DESVIO_STATE/resolve-$topic.log, before re-running."
+  $(resolver_log "$topic"), before re-running."
 }
 
 # Never commit a conflict marker. rerere replays a resolution recorded from a

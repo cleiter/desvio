@@ -98,7 +98,7 @@ on its own line." \
       --allowed-tools Read Edit Write Grep Glob \
       --disallowed-tools Bash Task WebFetch WebSearch \
       --output-format text
-  ) | tee "$DESVIO_STATE/resolve-$topic.log" | sed 's/^/       │ /'
+  ) | tee "$(resolver_log "$topic")" | sed 's/^/       │ /'
 
   # The agent's own verdict is a hint. Markers are the check.
   local -a left; left=()
