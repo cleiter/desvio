@@ -86,8 +86,8 @@ cmd_build() {
   # Resolve every branch to an OID up front. A branch that moves mid-run (a
   # concurrent rebase in another worktree) must not assemble a build from two
   # different moments in time.
-  local -a BRANCHES OIDS NOTES
-  BRANCHES=(); OIDS=(); NOTES=()
+  local -a BRANCHES OIDS NOTES MISSING
+  BRANCHES=(); OIDS=(); NOTES=(); MISSING=()
   local raw line note oid
   while IFS= read -r raw || [ -n "$raw" ]; do
     line="${raw%%#*}"
@@ -101,11 +101,23 @@ cmd_build() {
       *'#'*) note="$(printf '%s' "${raw#*#}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;;
     esac
     if ! oid=$(gitw rev-parse --verify --quiet "refs/heads/$line^{commit}"); then
-      warn "SKIP $line — no such local branch"
+      MISSING+=("$line")
       continue
     fi
     BRANCHES+=("$line"); OIDS+=("$oid"); NOTES+=("$note")
   done < "$DESVIO_MANIFEST"
+
+  # A named branch that does not exist is a broken manifest, not a build. Warning
+  # and carrying on produces the worst possible artefact: a green "ready" banner
+  # over a build that is quietly missing the feature you asked for. Nothing has
+  # been written yet at this point, so dying here costs nothing.
+  if [ "${#MISSING[@]}" -gt 0 ]; then
+    die "$DESVIO_MANIFEST names $(plural "${#MISSING[@]}" branch) that does not exist in $DESVIO_REPO:
+$(printf '    %s\n' "${MISSING[@]}")
+  Nothing was built. Either create the branch, fix the spelling, or — if it
+  landed upstream and you no longer need it — delete the line from the
+  manifest. Comment it out with '#' to sit it out for one build."
+  fi
 
   local base_subject base_when base_behind=""
   base_subject=$(gitr log -1 --format='%s' "$base")

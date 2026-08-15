@@ -35,15 +35,27 @@ run_desvio build
 assert_contains "$OUT" "rejected upstream, keeping it anyway" "the note reaches the summary"
 
 # ---------------------------------------------------------------------------
-it "a branch that does not exist is skipped and the build carries on"
+# A branch you named that is not there is a broken manifest, and the one outcome
+# worth ruling out is a green "ready" banner over a build quietly missing it.
+it "a branch that does not exist stops the build before anything is written"
 setup
 manifest ghost alpha
 run_desvio build
 
-assert_eq 0 "$STATUS" "the build still succeeds"
-assert_contains "$OUT" "SKIP ghost" "the missing branch is reported"
-assert_contains "$OUT" "no such local branch" "with the reason"
-assert_contains "$OUT" "alpha" "and the real branch is still merged"
+assert_eq 1 "$STATUS" "the build fails"
+assert_contains "$OUT" "does not exist" "it says the branch is not there"
+assert_contains "$OUT" "ghost" "and names it"
+assert_not_contains "$OUT" "is ready" "no success banner over a partial build"
+
+# All of them at once, so fixing a manifest is one pass and not one per run.
+it "every missing branch is named in a single message"
+setup
+manifest ghost phantom alpha
+run_desvio build
+
+assert_eq 1 "$STATUS" "the build fails"
+assert_contains "$OUT" "ghost" "the first missing branch is named"
+assert_contains "$OUT" "phantom" "and so is the second"
 
 # ---------------------------------------------------------------------------
 # `|| [ -n "$raw" ]` on the read loop. Without it the last line of a file with no
