@@ -142,24 +142,57 @@ rm -rf "$PREVIOUS"
 # manageBuiltInDaemon TRUE here, the opposite of desktop.sh: for the dev app the
 # point is that it must never touch the real daemon; for the packaged app,
 # running its own bundled daemon IS the point.
+#
+# Pin those keys, not the file. This is the REAL userData directory — the same
+# one a stock Paseo writes — so it holds settings this script has never heard of,
+# including any a newer Paseo added after this script was written. Overwriting
+# the document to pin six keys throws all of them away.
 log "pinning $USER_DATA/desktop-settings.json"
 mkdir -p "$USER_DATA"
-cat >"$USER_DATA/desktop-settings.json" <<'JSON'
-{
-  "version": 1,
-  "settings": {
-    "releaseChannel": "stable",
-    "daemon": {
-      "manageBuiltInDaemon": true,
-      "keepRunningAfterQuit": true
-    }
-  },
-  "migrations": {
-    "legacyRendererSettingsImported": true,
-    "daemonStopOnQuitDefaultApplied": true
-  }
-}
-JSON
+python3 - "$USER_DATA/desktop-settings.json" <<'PY' || die "could not update desktop-settings.json"
+import json, os, shutil, sys, tempfile
+
+path = sys.argv[1]
+doc = {}
+if os.path.exists(path):
+    shutil.copy2(path, path + ".bak")
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except (ValueError, OSError):
+        # Unreadable is not the same as absent: the backup above is the only
+        # copy now, so say where it went rather than silently starting fresh.
+        print("existing settings are not valid JSON — kept at %s.bak" % path,
+              file=sys.stderr)
+        doc = {}
+if not isinstance(doc, dict):
+    doc = {}
+
+doc.setdefault("version", 1)
+
+settings = doc.setdefault("settings", {})
+settings["releaseChannel"] = "stable"
+daemon = settings.setdefault("daemon", {})
+daemon["manageBuiltInDaemon"] = True
+daemon["keepRunningAfterQuit"] = True
+
+# Both flags, or coerceDocument resets keepRunningAfterQuit on first read.
+migrations = doc.setdefault("migrations", {})
+migrations["legacyRendererSettingsImported"] = True
+migrations["daemonStopOnQuitDefaultApplied"] = True
+
+# Write-then-rename: a crash mid-write must not leave a truncated settings file
+# that the app then refuses to start against.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+except BaseException:
+    os.path.exists(tmp) and os.unlink(tmp)
+    raise
+PY
 
 PARALLEL_NOTE=""
 if [ "$PRODUCT_NAME" != "Paseo" ]; then
