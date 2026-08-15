@@ -160,9 +160,27 @@ default_base() {
 #
 #   stamp_changed deps package-lock.json || return 0
 #   npm ci && stamp_write deps package-lock.json
+# Hash each input's NAME and existence alongside its content, not the raw
+# concatenation. `cat a b` cannot tell "a grew a line that b lost" from "nothing
+# moved", and — the one that actually bites — `cat missing 2>/dev/null` produces
+# exactly the same bytes as an empty file. A deleted package-lock.json would
+# hash equal to an empty one and the install would be skipped against stale
+# node_modules.
+#
+# A missing input is recorded as absent rather than being an error: for a
+# skip-the-work-if-nothing-changed hint, "the file is gone" means changed, and
+# turning a cache miss into a failed build would be the wrong trade.
 stamp_digest() {
   local name="$1"; shift
-  ( cd "$DESVIO_WORKTREE" && cat "$@" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 )
+  ( cd "$DESVIO_WORKTREE" || exit 1
+    local f
+    for f in "$@"; do
+      if [ -f "$f" ]; then
+        printf '%s\0%s\0' "$f" "$(shasum -a 256 < "$f" | cut -d' ' -f1)"
+      else
+        printf '%s\0absent\0' "$f"
+      fi
+    done | shasum -a 256 | cut -d' ' -f1 )
 }
 
 stamp_changed() {
