@@ -83,6 +83,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Adopting a worktree means resetting and cleaning it, so desvio may only adopt
+# one it made. `git worktree list` includes the PRIMARY checkout, so without an
+# ownership check a DESVIO_WORKTREE typo pointing at your own repo takes the
+# adopt path and gets reset --hard'd.
+it "a DESVIO_WORKTREE pointing at the checkout itself is refused"
+fixture_new
+topic_branch alpha file.txt "alpha-line"
+fixture_config
+manifest alpha
+printf 'DESVIO_WORKTREE="%s"\n' "$REPO" >> "$BUILD/desvio.conf"
+repo_append file.txt "precious-uncommitted-work"
+
+run_desvio build
+assert_contains "$OUT" "points at the upstream checkout itself" "it refuses"
+assert_contains "$(cat "$REPO/file.txt")" "precious-uncommitted-work" \
+  "and the uncommitted work in it is untouched"
+
+# ---------------------------------------------------------------------------
+it "a worktree on someone else's branch is refused, not adopted"
+fixture_new
+topic_branch alpha file.txt "alpha-line"
+fixture_config
+manifest alpha
+git -C "$REPO" worktree add -q -b other "$TEST_TMP/other" origin/main
+printf 'DESVIO_WORKTREE="%s"\n' "$TEST_TMP/other" >> "$BUILD/desvio.conf"
+printf 'work-in-progress\n' > "$TEST_TMP/other/file.txt"
+
+run_desvio build
+assert_contains "$OUT" "is on 'other'" "it names the branch it found"
+assert_contains "$OUT" "worktree remove" "and says how to get rid of it if it is stale"
+assert_contains "$(cat "$TEST_TMP/other/file.txt")" "work-in-progress" \
+  "the other worktree's changes survive"
+
+# ---------------------------------------------------------------------------
 it "a config pointing at a non-checkout is rejected"
 fixture_new
 fixture_config

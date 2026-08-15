@@ -70,6 +70,8 @@ cmd_build() {
   if ! gitr worktree list --porcelain | grep -qx "worktree $DESVIO_WORKTREE"; then
     log "creating build worktree at $DESVIO_WORKTREE"
     gitr worktree add -f -B "$DESVIO_BRANCH" "$DESVIO_WORKTREE" "$base"
+  else
+    assert_worktree_ours
   fi
 
   build_guards
@@ -234,6 +236,30 @@ cmd_build() {
 }
 
 # ---------- guards ----------
+#
+# The build tree is disposable and build_guards below will reset --hard and
+# clean -fd it. That is only safe on a tree desvio made. `worktree list` also
+# lists the primary checkout, so a config that points DESVIO_WORKTREE at
+# $DESVIO_REPO — a plausible typo — takes the adopt path and lands here with
+# your real work in it. Adopt only what is demonstrably ours: registered to
+# this repo, and sitting on the disposable integration branch.
+assert_worktree_ours() {
+  local top branch
+  top=$(physical_path "$(gitr rev-parse --show-toplevel)")
+  [ "$DESVIO_WORKTREE" != "$top" ] || die "DESVIO_WORKTREE points at the upstream checkout itself:
+    $DESVIO_WORKTREE
+  That is where your work lives. The build tree is disposable — desvio resets
+  and cleans it on every run — so it must be a separate directory. Fix
+  DESVIO_WORKTREE in $DESVIO_CONFIG_FILE."
+
+  branch=$(gitw symbolic-ref -q --short HEAD 2>/dev/null || true)
+  [ "$branch" = "$DESVIO_BRANCH" ] || die "the worktree at $DESVIO_WORKTREE is on '${branch:-a detached HEAD}',
+  not the integration branch '$DESVIO_BRANCH'. desvio only ever adopts its own
+  build tree, because adopting one means resetting and cleaning it. If this
+  really is a stale desvio tree, remove it:
+    git -C $DESVIO_REPO worktree remove --force $DESVIO_WORKTREE"
+}
+
 build_guards() {
   # Ask git, do not stat a path: .git in a linked worktree is a FILE, so
   # $DESVIO_WORKTREE/.git/MERGE_HEAD can never exist and the test is dead. That
