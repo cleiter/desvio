@@ -45,6 +45,7 @@ cmd_build() {
   done
 
   load_config
+  acquire_build_lock
   [ -n "$base_ref" ] || base_ref="$DESVIO_BASE"
 
   local started_at; started_at=$(date '+%Y-%m-%d %H:%M')
@@ -235,6 +236,37 @@ cmd_build() {
 
   build_summary "$started_at" "$base_ref" "$base" "$base_subject" "$base_when" \
     "$base_behind" "$gated"
+}
+
+# ---------- lock ----------
+#
+# One build at a time per config. Two runs share one worktree and one
+# integration branch, so the second one's `reset --hard` lands in the middle of
+# the first one's merge, and neither build is the build either of you asked for.
+#
+# mkdir, not flock(1): that is a util-linux tool and a stock macOS does not have
+# it. mkdir is atomic everywhere, which is the only property a lock needs.
+acquire_build_lock() {
+  # Global, not local: the trap body is evaluated when the trap FIRES, by which
+  # point a local would be long out of scope and the lock would leak.
+  DESVIO_LOCK_DIR="$DESVIO_STATE/build.lock"
+  local dir="$DESVIO_LOCK_DIR" pid
+  if ! mkdir "$dir" 2>/dev/null; then
+    pid=$(cat "$dir/pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      die "another desvio build is already running (pid $pid).
+  They would share the build tree at $DESVIO_WORKTREE and overwrite each
+  other. Wait for it, or stop it and remove $dir."
+    fi
+    # A build killed with SIGKILL, or a machine that lost power, leaves the
+    # directory behind with a pid nobody is using. Say so and take it.
+    warn "stale build lock from pid ${pid:-unknown} — reclaiming it"
+    rm -rf "$dir"
+    mkdir "$dir" || die "cannot create the build lock at $dir"
+  fi
+  printf '%s' "$$" > "$dir/pid"
+  # EXIT covers `die`, which exits 1.
+  trap 'rm -rf "$DESVIO_LOCK_DIR"' EXIT INT TERM
 }
 
 # ---------- guards ----------
