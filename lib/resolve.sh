@@ -62,7 +62,9 @@ resolve_with_claude() {
   # are confined to the working directory. Everything that could reach a ref or
   # the network is denied.
   (
-    cd "$DESVIO_WORKTREE"
+    # `|| exit` is not decoration here: without it a failed cd runs the agent,
+    # in acceptEdits mode, against whatever directory we happen to be in.
+    cd "$DESVIO_WORKTREE" || exit 1
     claude -p "You are resolving a git merge conflict in a build tree. Working directory: $DESVIO_WORKTREE
 
 A topic branch is being merged into a disposable integration branch:
