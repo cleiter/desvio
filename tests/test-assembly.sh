@@ -117,8 +117,7 @@ setup_conflict_plus_harmless() {
   upstream_commit file.txt "upstream-line" "base: third"
 }
 setup_conflict_plus_harmless
-# A resolver that gives up. --keep-going only reaches its abandon path through a
-# failed resolver, not through --no-resolve; see the next test.
+# A resolver that gives up.
 fixture_config "DESVIO_AUTO_RESOLVE=1" 'desvio_resolve_conflict() { return 1; }'
 manifest conflicting harmless
 run_desvio build --keep-going
@@ -131,18 +130,29 @@ assert_eq "1" "$(git -C "$BUILD/build-tree" log --oneline --merges | wc -l | tr 
 if [ "$STATUS" -ne 0 ]; then ok "exit status is non-zero"; else fail "exit status is non-zero" "got 0"; fi
 
 # ---------------------------------------------------------------------------
-# Characterisation, not endorsement. `desvio build --help` says --keep-going will
-# "report a failed branch and carry on with the rest", but with --no-resolve the
-# conflict branch at lib/cmd-build.sh:185-186 calls conflict_death without
-# consulting the flag. This test pins today's behaviour so a deliberate fix shows
-# up as a failing test rather than passing unnoticed.
-it "--keep-going does NOT currently apply to --no-resolve"
+# --keep-going means what `desvio build --help` says it means: report the failed
+# branch and carry on. It applies whatever the conflict failed on — a resolver
+# that gave up, or a resolver that was never allowed to run.
+it "--keep-going applies to --no-resolve too"
 setup_conflict_plus_harmless
 fixture_config
 manifest conflicting harmless
 run_desvio build --keep-going --no-resolve
 
+assert_contains "$OUT" "abandoning this branch" "the conflicting branch is abandoned"
+assert_contains "$OUT" "left out of this build: conflicting" "and named in the summary"
+assert_contains "$OUT" "harmless" "the other branch still merged"
+if [ "$STATUS" -ne 0 ]; then ok "exit status is non-zero"; else fail "exit status is non-zero" "got 0"; fi
+
+# Without --keep-going, --no-resolve still stops dead and leaves the conflict in
+# the tree — that is the whole point of the flag.
+it "--no-resolve alone still stops at the first conflict"
+setup_conflict_plus_harmless
+fixture_config
+manifest conflicting harmless
+run_desvio build --no-resolve
+
 assert_contains "$OUT" "auto-resolution is off" "it dies at the first conflict"
-assert_not_contains "$OUT" "abandoning this branch" "--keep-going is not honoured here"
+assert_not_contains "$OUT" "abandoning this branch" "nothing is abandoned"
 
 finish

@@ -203,6 +203,13 @@ $(printf '    %s\n' "${MISSING[@]}")
           conflict_death "$b" "the resolver could not finish it.
   Transcript: $DESVIO_STATE/resolve-$b.log"
         fi
+      elif [ "$keep_going" = 1 ]; then
+        # --keep-going means what its help text says: report the branch and carry
+        # on. It cannot mean that only when a resolver was the thing that failed.
+        warn "  $b — conflict, abandoning this branch (--no-resolve --keep-going)"
+        gitw merge --abort || true
+        FAILED+=("$b"); HOW[$i]="unresolved"
+        continue
       else
         conflict_death "$b" "auto-resolution is off (--no-resolve)."
       fi
