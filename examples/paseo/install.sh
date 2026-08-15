@@ -17,9 +17,18 @@ set -euo pipefail
 : "${DESVIO_WORKTREE:?run this with: desvio run install}"
 BUILD_DIR="$DESVIO_WORKTREE"
 
+# Paseo's own settings live beside this script, not in desvio.conf: desvio is a
+# generic tool and where an app gets installed is none of its business. `if`, not
+# `&&`, because under `set -e` a false test as the last command kills the script.
+PASEO_CONF="${PASEO_CONF:-$(dirname "$DESVIO_CONFIG_FILE")/paseo.conf}"
+if [ -f "$PASEO_CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$PASEO_CONF"
+fi
+
 DEST_DIR="${PASEO_APP_DEST:-/Applications}"
 
-# Must match what package.sh built — export it once in desvio.conf, not here.
+# Must match what package.sh built, which is why both read the same paseo.conf.
 PRODUCT_NAME="${PASEO_PRODUCT_NAME:-Paseo}"
 APP_NAME="$PRODUCT_NAME.app"
 BUILT_APP="$BUILD_DIR/packages/desktop/release/mac-arm64/$APP_NAME"
@@ -42,6 +51,10 @@ die(){  printf '\n\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ -d "$BUILT_APP" ] || die "no bundle at $BUILT_APP
   Build one first:  desvio run package"
+
+# /Applications always exists; a PASEO_APP_DEST that does not should say so here
+# rather than as a bare `cp:` after the script has already claimed to install.
+[ -d "$DEST_DIR" ] || die "no such directory: $DEST_DIR  (PASEO_APP_DEST)"
 
 # What it actually is, read from the bundle rather than recomputed — this script
 # may run days after the build, and guessing the version would be a lie.
@@ -101,9 +114,9 @@ JSON
 PARALLEL_NOTE=""
 if [ "$PRODUCT_NAME" != "Paseo" ]; then
   PARALLEL_NOTE="
-A stock Paseo.app can sit in $DEST_DIR beside this one, and both read that same
-userData dir. Run ONE at a time: Electron's single-instance lock lives there too,
-so launching the second while the first is up just brings the first forward."
+A stock Paseo.app can sit beside this one, and both read that same userData dir.
+Run ONE at a time: Electron's single-instance lock lives there too, so launching
+the second while the first is up just brings the first forward."
 fi
 
 cat <<EOF

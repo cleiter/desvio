@@ -12,6 +12,8 @@ desvio build
 
 Keep this directory outside the checkout. It holds the build tree, the state directory and your manifest, and none of that belongs in a repo you also send pull requests from.
 
+Two config files, and the split is deliberate. **`desvio.conf`** is desvio's, and holds `DESVIO_*` and the build hooks — desvio is a generic tool and knows nothing about Paseo. **`paseo.conf`** is Paseo's: the bundle name, where it installs, which daemon home to run against. The scripts here source it; desvio never reads it and does not know it exists. Anything you add that only means something to Paseo belongs in the second file.
+
 ## What the config does
 
 | Hook | |
@@ -39,7 +41,7 @@ desvio build && desvio run package install
 - That version ranks *below* upstream's stable release of the same number, so a working updater would replace your build with stock Paseo. What prevents it is that `-c.mac.target=dir` publishes nothing and therefore writes no `app-update.yml`. The script asserts the file is absent rather than assuming it.
 - `packages/app/app.config.js` derives Android and iOS version numbers from `package.json` on every Expo config load, including a web-only export, and accepts only `X.Y.Z` and `X.Y.Z-beta.N`. The script widens that pattern in the tree and restores it afterwards. If upstream edits the pattern, the exact-string match fails and the script stops instead of silently skipping.
 
-Set `export PASEO_PRODUCT_NAME="Paseo Mine"` in `desvio.conf` and it installs as `Paseo Mine.app`, beside a stock Paseo rather than over it — with its own `appId`, so LaunchServices is not left choosing between two bundles claiming `sh.paseo.desktop`. The rename is cosmetic on purpose. `main.ts` hardcodes `app.setName("Paseo")` and derives userData from that, not from the product name, so both bundles read the same hosts, settings and conversations. The same directory holds Electron's single-instance lock, which is why this gives you two icons to choose between rather than two apps to run at once: launch the second while the first is up and it just brings the first forward.
+Set `PASEO_PRODUCT_NAME="Paseo Mine"` in [`paseo.conf`](paseo.conf) and it installs as `Paseo Mine.app`, beside a stock Paseo rather than over it — with its own `appId`, so LaunchServices is not left choosing between two bundles claiming `sh.paseo.desktop`. The rename is cosmetic on purpose. `main.ts` hardcodes `app.setName("Paseo")` and derives userData from that, not from the product name, so both bundles read the same hosts, settings and conversations. The same directory holds Electron's single-instance lock, which is why this gives you two icons to choose between rather than two apps to run at once: launch the second while the first is up and it just brings the first forward.
 
 The bundle is re-signed ad-hoc in full. electron-builder signs only the outer binary, and dyld refuses to map the bundled Electron Framework — a different team ID — into an ad-hoc process, so the app dies at launch before any of its own code runs.
 

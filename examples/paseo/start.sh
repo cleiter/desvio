@@ -16,6 +16,14 @@ set -euo pipefail
 
 : "${DESVIO_WORKTREE:?run this with: desvio run start}"
 BUILD_DIR="$DESVIO_WORKTREE"
+
+# Paseo's own settings live beside this script, not in desvio.conf. `if`, not
+# `&&`: under `set -e` a false test as the last command kills the script.
+PASEO_CONF="${PASEO_CONF:-$(dirname "$DESVIO_CONFIG_FILE")/paseo.conf}"
+if [ -f "$PASEO_CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$PASEO_CONF"
+fi
 # Its sibling task. Handing off with exec rather than `desvio run desktop` keeps
 # this working when desvio itself was invoked by path and is not on PATH.
 DESKTOP_TASK="$(dirname "$DESVIO_CONFIG_FILE")/desktop.sh"

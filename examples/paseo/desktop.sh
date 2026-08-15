@@ -29,6 +29,14 @@ set -euo pipefail
 : "${DESVIO_WORKTREE:?run this with: desvio run desktop}"
 BUILD_DIR="$DESVIO_WORKTREE"
 
+# Paseo's own settings live beside this script, not in desvio.conf. `if`, not
+# `&&`: under `set -e` a false test as the last command kills the script.
+PASEO_CONF="${PASEO_CONF:-$(dirname "$DESVIO_CONFIG_FILE")/paseo.conf}"
+if [ -f "$PASEO_CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$PASEO_CONF"
+fi
+
 REAL_HOME="${PASEO_REAL_HOME:-$HOME/.paseo}"
 REAL_PORT="${PASEO_REAL_PORT:-6767}"
 # Never 6767, and clear of 6768 which every dev script defaults to.

@@ -19,11 +19,16 @@ set -euo pipefail
 : "${DESVIO_WORKTREE:?run this with: desvio run package}"
 BUILD_DIR="$DESVIO_WORKTREE"
 
+# Paseo's own settings live beside this script, not in desvio.conf: desvio is a
+# generic tool and what the bundle is called is none of its business. `if`, not
+# `&&`, because under `set -e` a false test as the last command kills the script.
+PASEO_CONF="${PASEO_CONF:-$(dirname "$DESVIO_CONFIG_FILE")/paseo.conf}"
+if [ -f "$PASEO_CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$PASEO_CONF"
+fi
+
 # Naming the bundle is what lets it live in /Applications next to a stock Paseo.
-# Set it in desvio.conf with `export`, so package and install agree:
-#
-#   export PASEO_PRODUCT_NAME="Paseo Mine"
-#
 # It renames the BUNDLE ONLY. The app's data does not follow it, and that is on
 # purpose here: packages/desktop/src/main.ts hardcodes
 #
