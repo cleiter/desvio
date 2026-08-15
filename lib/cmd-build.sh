@@ -75,8 +75,12 @@ cmd_build() {
     assert_worktree_ours
   fi
 
-  build_guards
+  # Preflight before the guards, because the guards WRITE. desvio_preflight is
+  # the config's veto — the Paseo example uses it to refuse a build while the
+  # daemon is still running — and a veto that arrives after `reset --hard` has
+  # already rewritten the tree is not a veto.
   run_hook desvio_preflight
+  build_guards
 
   # ---------- manifest ----------
   # Resolve every branch to an OID up front. A branch that moves mid-run (a
