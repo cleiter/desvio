@@ -225,6 +225,13 @@ $(printf '    %s\n' "${MISSING[@]}")
 
   if [ "$assemble_only" = 1 ]; then
     log "--assemble-only — assembled, skipping install and gate."
+    # The same check build_summary ends with. Skipping the summary must not also
+    # skip the verdict: --assemble-only is the flag a CI job reaches for, and
+    # exit 0 over a build that dropped a branch is exactly the lie CI believes.
+    if [ "${#FAILED[@]}" -gt 0 ]; then
+      warn "left out of this build: ${FAILED[*]}"
+      return 1
+    fi
     return 0
   fi
 
