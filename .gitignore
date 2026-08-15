@@ -9,3 +9,6 @@ manifest.txt
 !examples/**/desvio.conf
 !examples/**/manifest.txt
 .DS_Store
+
+# Scratch state from AI tooling run against this repo (codex session ids, etc).
+.context/
