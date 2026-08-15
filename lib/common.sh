@@ -110,7 +110,12 @@ load_config() {
   # Relative to the CONFIG, like DESVIO_STATE and the rest — not to whatever
   # directory you happened to run desvio from.
   DESVIO_REPO="$(config_relative "$DESVIO_REPO")"
-  [ -d "$DESVIO_REPO/.git" ] || die "DESVIO_REPO is not a git checkout: $DESVIO_REPO"
+  # Ask git rather than stat a path: .git is a plain directory only in a primary
+  # checkout, and a FILE in a linked worktree. A linked worktree is a perfectly
+  # good DESVIO_REPO — it shares the object store and the ref namespace, which is
+  # all desvio touches — so a stat test rejects it for no reason.
+  git -C "$DESVIO_REPO" rev-parse --git-dir >/dev/null 2>&1 ||
+    die "DESVIO_REPO is not a git checkout: $DESVIO_REPO"
 
   DESVIO_REMOTE="${DESVIO_REMOTE:-origin}"
   DESVIO_BRANCH="${DESVIO_BRANCH:-desvio}"
