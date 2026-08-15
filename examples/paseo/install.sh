@@ -49,6 +49,19 @@ log(){  printf '\n\033[1;34m[install]\033[0m %s\n' "$*"; }
 warn(){ printf '\033[1;33m[install]\033[0m %s\n' "$*"; }
 die(){  printf '\n\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# $APP_NAME is built from PRODUCT_NAME and ends up as the target of the
+# `rm -rf` below, against $DEST_DIR — /Applications by default. A slash in the
+# name would aim that at a directory nobody asked for. Your own config value,
+# so this is a typo guard rather than a security boundary, but it guards a line
+# that deletes things.
+case "$PRODUCT_NAME" in
+  ""|.|..) die "PASEO_PRODUCT_NAME cannot be '$PRODUCT_NAME'" ;;
+  */*)     die "PASEO_PRODUCT_NAME cannot contain a slash: '$PRODUCT_NAME'
+  It names one bundle in $DEST_DIR, so it becomes one path component." ;;
+  -*)      die "PASEO_PRODUCT_NAME cannot start with a dash: '$PRODUCT_NAME'" ;;
+  *..*)    die "PASEO_PRODUCT_NAME cannot contain '..': '$PRODUCT_NAME'" ;;
+esac
+
 [ -d "$BUILT_APP" ] || die "no bundle at $BUILT_APP
   Build one first:  desvio run package"
 

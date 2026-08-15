@@ -90,6 +90,19 @@ done
 log(){  printf '\n\033[1;34m[pkg]\033[0m %s\n' "$*"; }
 die(){  printf '\n\033[1;31m[pkg] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The product name becomes a path component, and further down it becomes the
+# target of an `rm -rf`. It is your own config value rather than anything
+# hostile, so this is a typo guard — but a slash in it silently aims that rm at
+# a directory you did not mean, which is worth one case statement.
+case "$PRODUCT_NAME" in
+  ""|.|..) die "PASEO_PRODUCT_NAME cannot be '$PRODUCT_NAME'" ;;
+  */*)     die "PASEO_PRODUCT_NAME cannot contain a slash: '$PRODUCT_NAME'
+  It names one bundle, so it becomes one path component." ;;
+  -*)      die "PASEO_PRODUCT_NAME cannot start with a dash: '$PRODUCT_NAME'
+  It would be read as an option by the tools that receive it." ;;
+  *..*)    die "PASEO_PRODUCT_NAME cannot contain '..': '$PRODUCT_NAME'" ;;
+esac
+
 [ -d "$BUILD_DIR" ] || die "no build tree at $BUILD_DIR — run desvio build first"
 [ "$(uname -m)" = "arm64" ] || die "this script only builds the arm64 bundle"
 
