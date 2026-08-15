@@ -304,10 +304,19 @@ snapshot_refs() {
     grep -v " refs/heads/$DESVIO_BRANCH\$" || true
 }
 
-# Restore anything that moved or vanished, then stop. Called after the resolver
+# Report anything that moved or vanished, then stop. Called after the resolver
 # whatever its outcome.
+#
+# It REPORTS, it does not rewind. desvio cannot tell "the resolver did this"
+# from "you committed in another worktree while the agent was thinking", and
+# the two want opposite responses. Restoring automatically gets the first case
+# slightly faster and destroys a real commit in the second. Since the header
+# comment is right that this path should be unreachable — the resolver has no
+# shell — a firing here means our model of what happened is already wrong, and
+# that is the worst possible moment to start writing refs. So: print the
+# before/after OIDs and the exact command to undo it, and let a human choose.
 assert_refs_unchanged() {
-  local before="$1" now moved=0 oid ref cur
+  local before="$1" now moved=0 oid ref cur restore=""
   now=$(snapshot_refs)
   # `if`, not `[ ... ] && return 0`: as the last command of a function, a false
   # test returns non-zero and under `set -e` that kills the caller.
@@ -316,16 +325,22 @@ assert_refs_unchanged() {
     [ -n "${ref:-}" ] || continue
     cur=$(gitr rev-parse --verify --quiet "$ref" || true)
     if [ "$cur" != "$oid" ]; then
-      warn "restoring $ref → ${oid:0:9} (was ${cur:-deleted})"
-      gitr update-ref "$ref" "$oid"
+      warn "$ref moved: ${oid:0:9} → ${cur:-deleted}"
+      restore="$restore    git -C $DESVIO_REPO update-ref $ref $oid
+"
       moved=1
     fi
   done <<< "$before"
   if [ "$moved" = 1 ]; then
-    die "the resolver moved local branches. They have been restored from the
-  pre-merge snapshot and the build stopped, so you can look at $DESVIO_REPO
-  before anything else runs. This should be impossible — the resolver has no
-  shell — so treat it as a bug in desvio, not a one-off."
+    die "local branches moved while the merge was running, and the build stopped
+  before anything else could run. NOTHING has been restored — desvio cannot
+  tell a misbehaving resolver from a commit you made in another worktree, and
+  guessing wrong would throw away real work.
+
+  Look at $DESVIO_REPO first. If the move was not yours, put them back with:
+$restore
+  The resolver has no shell, so it should not be able to reach a ref at all.
+  If these moves were not yours either, treat it as a bug in desvio."
   fi
   warn "new branches appeared during the merge — none of yours moved"
   return 0

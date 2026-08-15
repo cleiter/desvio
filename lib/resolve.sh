@@ -13,7 +13,10 @@
 #      them. This is structural, not a promise.
 #   2. Belt and braces: every branch OID except the integration branch is
 #      snapshotted before the agent starts and verified after. Anything that
-#      moved is restored with update-ref and the build stops.
+#      moved stops the build, names itself, and prints the update-ref that puts
+#      it back. desvio does not run that command for you: it cannot tell a
+#      misbehaving resolver from a commit you made in another worktree, and
+#      rewinding the second one would destroy real work.
 #
 # The agent only edits the conflicted files. Staging, committing and every
 # verification is done by desvio, not by it. Your desvio_verify gate is the real

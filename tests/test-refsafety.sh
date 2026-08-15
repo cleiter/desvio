@@ -17,9 +17,13 @@ setup_conflict() {
 }
 
 # ---------------------------------------------------------------------------
-it "a resolver that MOVES a topic ref is restored and the build stops"
+# desvio REPORTS a moved ref, it does not rewind it. It cannot tell a
+# misbehaving resolver from a commit you made in another worktree mid-build,
+# and rewinding the second case destroys real work. So the promise these tests
+# encode is: the build stops before anything else runs, and you are told
+# exactly what moved and how to undo it.
+it "a resolver that MOVES a topic ref stops the build and hands you the undo"
 setup_conflict
-before="$(refs_of_topics)"
 victim_before="$(oid_of victim)"
 fixture_config "DESVIO_AUTO_RESOLVE=1" '
 desvio_resolve_conflict() {
@@ -29,13 +33,14 @@ desvio_resolve_conflict() {
 manifest conflicting
 run_desvio build
 
-assert_contains "$OUT" "the resolver moved local branches" "moving a ref stops the build"
-assert_contains "$OUT" "restoring refs/heads/victim" "it says which ref it put back"
-assert_eq "$victim_before" "$(oid_of victim)" "victim is back at its original commit"
-assert_eq "$before" "$(refs_of_topics)" "every other ref is untouched too"
+assert_contains "$OUT" "local branches moved" "moving a ref stops the build"
+assert_contains "$OUT" "refs/heads/victim moved" "it says which ref moved"
+assert_contains "$OUT" "NOTHING has been restored" "it is explicit that it did not rewind"
+assert_contains "$OUT" "update-ref refs/heads/victim $victim_before" \
+  "it prints the exact command that puts the ref back"
 
 # ---------------------------------------------------------------------------
-it "a resolver that DELETES a topic ref is restored and the build stops"
+it "a resolver that DELETES a topic ref stops the build and hands you the undo"
 setup_conflict
 victim_before="$(oid_of victim)"
 fixture_config "DESVIO_AUTO_RESOLVE=1" '
@@ -46,9 +51,10 @@ desvio_resolve_conflict() {
 manifest conflicting
 run_desvio build
 
-assert_contains "$OUT" "the resolver moved local branches" "deleting a ref stops the build"
-assert_contains "$OUT" "(was deleted)" "the message says it had been deleted"
-assert_eq "$victim_before" "$(oid_of victim)" "the deleted branch is recreated at its OID"
+assert_contains "$OUT" "local branches moved" "deleting a ref stops the build"
+assert_contains "$OUT" "→ deleted" "the message says it had been deleted"
+assert_contains "$OUT" "update-ref refs/heads/victim $victim_before" \
+  "it prints the command that recreates the branch at its OID"
 
 # ---------------------------------------------------------------------------
 # A NEW branch appearing is deliberately not an error (lib/cmd-build.sh:296). A

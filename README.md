@@ -98,7 +98,9 @@ For that first time, desvio runs Claude Code on the conflicted files. A conflict
 **Your branches cannot be touched by it.** Two independent reasons:
 
 1. The agent runs with no shell tool, so it cannot run git at all, and its writes are confined to the worktree. Your refs live in the checkout's `.git`, outside that directory. This is structural, not a promise.
-2. Every branch OID is snapshotted before the agent starts and verified after. Anything that moved is restored with `update-ref` and the build stops.
+2. Every branch OID is snapshotted before the agent starts and verified after. Anything that moved stops the build and prints the `update-ref` that puts it back.
+
+desvio does not run that `update-ref` itself, on purpose. It cannot tell a misbehaving resolver from a commit you made in another worktree while the agent was thinking, and rewinding the second one would destroy real work. It stops, shows you the before and after OIDs, and lets you decide.
 
 Turn it off with `desvio build --no-resolve` and resolve by hand; rerere records your resolution the same way. Replace it by defining `desvio_resolve_conflict` in the config.
 
