@@ -117,6 +117,63 @@ assert_contains "$(cat "$TEST_TMP/other/file.txt")" "work-in-progress" \
   "the other worktree's changes survive"
 
 # ---------------------------------------------------------------------------
+# One build at a time per config: two runs share a worktree and an integration
+# branch, so the second one's reset lands inside the first one's merge.
+it "a second build refuses while another holds the lock"
+setup
+mkdir -p "$BUILD/state/build.lock"
+printf '%s' "$$" > "$BUILD/state/build.lock/pid"   # this test's own shell: alive
+
+run_desvio build
+assert_contains "$OUT" "another desvio build is already running" "it refuses"
+assert_contains "$OUT" "$$" "and names the pid holding it"
+if [ -d "$BUILD/state/build.lock" ]; then
+  ok "the refused build leaves the lock alone"
+else
+  fail "the refused build leaves the lock alone" "it deleted someone else's lock"
+fi
+
+# ---------------------------------------------------------------------------
+# A build killed with SIGKILL, or a machine that lost power, leaves the lock
+# behind. Refusing forever on a pid nobody is using would be worse than the race.
+it "a lock left by a dead process is reclaimed"
+setup
+( : ) & stale=$!; wait "$stale" 2>/dev/null || true
+mkdir -p "$BUILD/state/build.lock"
+printf '%s' "$stale" > "$BUILD/state/build.lock/pid"
+
+run_desvio build
+assert_eq 0 "$STATUS" "the build succeeds"
+assert_contains "$OUT" "stale build lock" "it says it reclaimed one"
+
+# ---------------------------------------------------------------------------
+it "the lock is released when the build finishes"
+setup
+run_desvio build
+assert_eq 0 "$STATUS" "the build succeeds"
+if [ -d "$BUILD/state/build.lock" ]; then
+  fail "the lock is gone afterwards" "build.lock survived a successful build"
+else
+  ok "the lock is gone afterwards"
+fi
+
+# ---------------------------------------------------------------------------
+# `die` exits 1, and the trap is on EXIT — so a failed build must not strand the
+# lock and refuse every later run.
+it "the lock is released even when the build dies"
+fixture_new
+fixture_config
+manifest
+run_desvio build nosuchref        # dies resolving the base, after the lock is taken
+
+if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+if [ -d "$BUILD/state/build.lock" ]; then
+  fail "the lock is gone afterwards" "build.lock survived a failed build"
+else
+  ok "the lock is gone afterwards"
+fi
+
+# ---------------------------------------------------------------------------
 it "a config pointing at a non-checkout is rejected"
 fixture_new
 fixture_config
@@ -155,75 +212,5 @@ cd "$BUILD" || exit 1
 assert_dies_with "no desvio.conf found" build
 run_desvio build
 assert_contains "$OUT" "desvio init" "and suggests init"
-
-# ---------------------------------------------------------------------------
-# Two concurrent builds share one worktree and one integration branch, so the
-# second one's `reset --hard` lands in the middle of the first one's merge.
-# Neither build is then the build anybody asked for.
-it "a second build refuses to start while one is running"
-fixture_new
-topic_branch alpha file.txt "alpha-line"
-fixture_config
-manifest alpha
-
-mkdir -p "$BUILD/state/build.lock"
-sleep 30 &
-holder=$!
-printf '%s' "$holder" > "$BUILD/state/build.lock/pid"
-
-run_desvio build
-kill "$holder" 2>/dev/null || true
-wait "$holder" 2>/dev/null || true
-
-assert_contains "$OUT" "another desvio build is already running" "the second build refuses"
-assert_contains "$OUT" "pid $holder" "and names the process holding it"
-if [ -d "$BUILD/state/build.lock" ]; then
-  ok "it leaves the other build's lock alone"
-else
-  fail "it leaves the other build's lock alone" "the lock was removed"
-fi
-
-# ---------------------------------------------------------------------------
-# SIGKILL and lost power both leave the directory behind with a pid nobody is
-# using. Refusing forever on that would mean hand-deleting a directory to build.
-it "a lock left by a dead process is reclaimed"
-fixture_new
-topic_branch alpha file.txt "alpha-line"
-fixture_config
-manifest alpha
-
-mkdir -p "$BUILD/state/build.lock"
-( exit 0 ) &
-dead=$!
-wait "$dead" 2>/dev/null || true
-printf '%s' "$dead" > "$BUILD/state/build.lock/pid"
-
-run_desvio build
-assert_eq 0 "$STATUS" "the build runs"
-assert_contains "$OUT" "stale build lock" "and says it took a stale lock"
-
-# ---------------------------------------------------------------------------
-it "the lock is released when the build finishes"
-setup
-if [ -e "$BUILD/state/build.lock" ]; then
-  fail "no lock is left behind after a successful build" "build.lock survived"
-else
-  ok "no lock is left behind after a successful build"
-fi
-
-# ---------------------------------------------------------------------------
-# `die` exits 1, which fires the EXIT trap. If it did not, one bad ref would
-# wedge every later build behind a lock nobody holds.
-it "the lock is released even when the build dies"
-fixture_new
-fixture_config
-manifest
-run_desvio build nosuchref
-if [ "$STATUS" -eq 0 ]; then fail "the build fails" "got 0"; else ok "the build fails"; fi
-if [ -e "$BUILD/state/build.lock" ]; then
-  fail "and the lock is still released" "build.lock survived"
-else
-  ok "and the lock is still released"
-fi
 
 finish
