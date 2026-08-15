@@ -8,6 +8,8 @@
 #
 # Usage:  desvio run package
 # Env:    PASEO_PACKAGE_VERSION=1.2.3  PASEO_FORK_NAME=mine
+#         PASEO_PRODUCT_NAME="Paseo Mine"   name the bundle, to sit beside a stock
+#                                           install rather than replace it
 #
 # Run `desvio build` FIRST. This packages whatever is in the tree; it does not
 # assemble branches, and it does not check whether your gate ever passed.
@@ -17,8 +19,43 @@ set -euo pipefail
 : "${DESVIO_WORKTREE:?run this with: desvio run package}"
 BUILD_DIR="$DESVIO_WORKTREE"
 
-APP_NAME="Paseo.app"
+# Naming the bundle is what lets it live in /Applications next to a stock Paseo.
+# Set it in desvio.conf with `export`, so package and install agree:
+#
+#   export PASEO_PRODUCT_NAME="Paseo Mine"
+#
+# It renames the BUNDLE ONLY. The app's data does not follow it, and that is on
+# purpose here: packages/desktop/src/main.ts hardcodes
+#
+#   const APP_NAME = process.env.PASEO_TEST_APP_NAME?.trim() || "Paseo";
+#   app.setName(APP_NAME);
+#
+# and userData is derived from that name, not from productName. So both bundles
+# read ~/Library/Application Support/Paseo — same hosts, same settings, same
+# conversations, whichever icon you click.
+#
+# The flip side, and the reason this is not a way to run two at once: that
+# directory also holds Electron's SingletonLock. Launch the second app while the
+# first is running and it hands off to the running instance and quits. One at a
+# time. Separating them would mean patching APP_NAME too, and then they would no
+# longer share data.
+PRODUCT_NAME="${PASEO_PRODUCT_NAME:-Paseo}"
+APP_NAME="$PRODUCT_NAME.app"
 BUILT_APP="$BUILD_DIR/packages/desktop/release/mac-arm64/$APP_NAME"
+
+# A renamed bundle gets its own appId as well. Two bundles claiming
+# sh.paseo.desktop leaves LaunchServices to pick between them for `open -b` and
+# for the paseo:// scheme, and it picks the one it feels like. Nothing about the
+# app's data is keyed on this — the desktop stores nothing under the bundle id
+# and uses no keychain — but macOS grants permissions per bundle id, so the
+# renamed app may ask for notifications and the like on its own account.
+BUILDER_NAME_ARGS=()
+if [ "$PRODUCT_NAME" != "Paseo" ]; then
+  slug=$(printf '%s' "$PRODUCT_NAME" | tr '[:upper:]' '[:lower:]' \
+         | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//; s/^paseo-//')
+  APP_ID="${PASEO_APP_ID:-sh.paseo.desktop.$slug}"
+  BUILDER_NAME_ARGS=(-c.productName="$PRODUCT_NAME" -c.appId="$APP_ID")
+fi
 
 # Version: upstream's, with this build marked as a prerelease of it.
 #
@@ -122,15 +159,36 @@ npm --prefix "$BUILD_DIR" run build:app-deps:clean
 log "2/3 expo web export"
 ( cd "$BUILD_DIR/packages/app" && PASEO_WEB_PLATFORM=electron npx expo export --platform web )
 
-log "3/3 electron-builder (unsigned, no notarization, v$VERSION)"
+log "3/3 electron-builder (unsigned, no notarization, v$VERSION, $APP_NAME)"
 # CSC_IDENTITY_AUTO_DISCOVERY=false: no Developer ID needed.
 # -c.mac.target=dir: the .app only. Add dmg/zip if you want to hand it out.
+# The ${...[@]+...} guard is for bash 3.2, where expanding an empty array under
+# `set -u` is an error rather than nothing.
 ( cd "$BUILD_DIR" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run build --workspace=@getpaseo/desktop -- \
     -c.mac.notarize=false \
     -c.mac.target=dir \
-    -c.extraMetadata.version="$VERSION" )
+    -c.extraMetadata.version="$VERSION" \
+    ${BUILDER_NAME_ARGS[@]+"${BUILDER_NAME_ARGS[@]}"} )
 
-[ -d "$BUILT_APP" ] || die "electron-builder produced no app at $BUILT_APP"
+# electron-builder names the .app directory after executableName, which the
+# config pins to "Paseo" and -c.productName does not touch. Do not override that
+# too: after-pack.js and after-sign.js both hardcode
+#
+#   const EXECUTABLE_NAME = "Paseo";  ... path.join(appOutDir, `${EXECUTABLE_NAME}.app`)
+#
+# and after-pack uses it to find the Resources to prune, which is ~210 MB of
+# native modules. Rename it here instead, once the build and its hooks are done.
+# Nothing inside cares: the bundle's identity is in Info.plist, where
+# -c.productName already set CFBundleName and CFBundleDisplayName, and the
+# executable stays Contents/MacOS/Paseo. Rename before the re-sign below, so the
+# signature is taken on the bundle as it will be installed.
+PACKED_APP="$BUILD_DIR/packages/desktop/release/mac-arm64/Paseo.app"
+[ -d "$PACKED_APP" ] || die "electron-builder produced no app at $PACKED_APP"
+if [ "$PACKED_APP" != "$BUILT_APP" ]; then
+  log "renaming the bundle to $APP_NAME"
+  rm -rf "${BUILT_APP:?}"
+  mv "$PACKED_APP" "$BUILT_APP"
+fi
 
 # ---------- disarm the updater ----------
 # electron-builder.yml publishes to getpaseo/paseo and auto-updater.ts sets

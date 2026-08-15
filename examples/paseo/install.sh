@@ -9,6 +9,7 @@
 #
 # Usage:  desvio run install
 # Env:    PASEO_APP_DEST=/Applications
+#         PASEO_PRODUCT_NAME="Paseo Mine"
 #         PASEO_USER_DATA="$HOME/Library/Application Support/Paseo"
 #
 set -euo pipefail
@@ -17,8 +18,15 @@ set -euo pipefail
 BUILD_DIR="$DESVIO_WORKTREE"
 
 DEST_DIR="${PASEO_APP_DEST:-/Applications}"
-APP_NAME="Paseo.app"
+
+# Must match what package.sh built — export it once in desvio.conf, not here.
+PRODUCT_NAME="${PASEO_PRODUCT_NAME:-Paseo}"
+APP_NAME="$PRODUCT_NAME.app"
 BUILT_APP="$BUILD_DIR/packages/desktop/release/mac-arm64/$APP_NAME"
+
+# NOT "$PRODUCT_NAME": userData comes from app.setName(), which main.ts hardcodes
+# to "Paseo" whatever the bundle is called. A renamed build reads and writes the
+# stock directory, which is the point — same hosts, same settings, same history.
 USER_DATA="${PASEO_USER_DATA:-$HOME/Library/Application Support/Paseo}"
 
 for arg in "$@"; do
@@ -39,9 +47,12 @@ die(){  printf '\n\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # may run days after the build, and guessing the version would be a lie.
 VERSION=$(plutil -extract CFBundleShortVersionString raw "$BUILT_APP/Contents/Info.plist" 2>/dev/null || echo unknown)
 
+# The executable inside keeps its own name — electron-builder.yml pins
+# executableName: Paseo and productName does not override it — so the full path
+# is what tells this bundle apart from a stock one running next to it.
 if pgrep -f "$DEST_DIR/$APP_NAME/Contents/MacOS/Paseo" >/dev/null 2>&1; then
-  die "Paseo is running from $DEST_DIR. Quit it first — replacing a running
-  bundle leaves the live process reading files that no longer exist."
+  die "$PRODUCT_NAME is running from $DEST_DIR. Quit it first — replacing a
+  running bundle leaves the live process reading files that no longer exist."
 fi
 
 # A daemon started from the tree owns port 6767 and would block the app's own.
@@ -87,6 +98,14 @@ cat >"$USER_DATA/desktop-settings.json" <<'JSON'
 }
 JSON
 
+PARALLEL_NOTE=""
+if [ "$PRODUCT_NAME" != "Paseo" ]; then
+  PARALLEL_NOTE="
+A stock Paseo.app can sit in $DEST_DIR beside this one, and both read that same
+userData dir. Run ONE at a time: Electron's single-instance lock lives there too,
+so launching the second while the first is up just brings the first forward."
+fi
+
 cat <<EOF
 
 $(printf '\033[1;34m[install]\033[0m') installed $DEST_DIR/$APP_NAME
@@ -97,4 +116,5 @@ Launch it:  open -n "$DEST_DIR/$APP_NAME"
 The host registry lives in the same userData dir, so the hosts you already added
 are still there. The daemon this app starts is its own, on 6767, against
 \$HOME/.paseo — do not also run \`desvio run start\`, or they fight over the port.
+$PARALLEL_NOTE
 EOF
