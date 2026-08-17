@@ -20,6 +20,7 @@
 # It writes its arguments, one per line, to $ARGV_LOG, then acts:
 #   resolve — strip every marker, so desvio sees a successful resolution
 #   giveup  — touch nothing, so the markers survive and desvio must notice
+#   suspect — strip every marker, then flag the result as probably still broken
 fake_claude() {
   local behaviour="$1"
   FAKE_BIN="$TEST_TMP/fakebin"
@@ -30,7 +31,7 @@ fake_claude() {
   cat > "$FAKE_BIN/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$ARGV_LOG"
-if [ "$behaviour" = resolve ]; then
+if [ "$behaviour" = resolve ] || [ "$behaviour" = suspect ]; then
   # cwd is the build tree: resolve.sh cd's there before invoking us, which is
   # itself part of the contract this file checks.
   for f in \$(git diff --name-only --diff-filter=U); do
@@ -38,7 +39,11 @@ if [ "$behaviour" = resolve ]; then
     mv "\$f.tmp" "\$f"
   done
 fi
-printf 'RESOLVED\n'
+if [ "$behaviour" = suspect ]; then
+  printf 'RESOLVED-SUSPECT\nfile.txt calls a helper upstream deleted\n'
+else
+  printf 'RESOLVED\n'
+fi
 EOF
   chmod +x "$FAKE_BIN/claude"
   export PATH="$FAKE_BIN:$PATH"
@@ -151,5 +156,40 @@ else
     "nothing at $BUILD/state/resolve-feature-nested.log
 state/ holds: $(ls "$BUILD/state" 2>/dev/null | tr '\n' ' ')"
 fi
+
+# ---------------------------------------------------------------------------
+# The prompt is the only place the split-change failure is guarded against, and
+# nothing else in the suite reads it. Git conflicts on HALF a coupled change and
+# merges the other half cleanly; an agent told only to clear markers fixes what
+# it can see and leaves a file referencing symbols that no longer exist.
+it "the prompt tells the resolver a conflict is often half of one change"
+setup_conflict
+fake_claude resolve
+fixture_config "DESVIO_AUTO_RESOLVE=1"
+manifest conflicting
+run_desvio build
+
+assert_contains "$(cat "$ARGV_LOG")" "HALF OF ONE CHANGE" \
+  "the prompt names the split-change class"
+assert_contains "$(cat "$ARGV_LOG")" "END TO END" \
+  "and asks for the whole file to be read"
+assert_contains "$(cat "$ARGV_LOG")" "RESOLVED-SUSPECT" \
+  "and offers the third verdict"
+
+# ---------------------------------------------------------------------------
+# Markers cannot check "I cleared every marker and this is still broken", so the
+# verdict is the only channel for it. Read back from the transcript, which is
+# where a custom resolver's output lands too.
+it "a RESOLVED-SUSPECT verdict reaches the summary"
+setup_conflict
+fake_claude suspect
+fixture_config "DESVIO_AUTO_RESOLVE=1"
+manifest conflicting
+run_desvio build
+
+assert_eq 0 "$STATUS" "the build still succeeds — a suspicion is not a veto"
+assert_contains "$OUT" "the resolver was not sure" "it is reported while merging"
+assert_contains "$OUT" "calls a helper upstream deleted" "with the reason the agent gave"
+assert_contains "$OUT" "the resolver was NOT sure" "and the summary marks the branch"
 
 finish

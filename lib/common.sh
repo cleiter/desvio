@@ -17,9 +17,17 @@ log()  { printf '\n%s[desvio]%s %s\n' "$BLU" "$OFF" "$*"; }
 warn() { printf '%s[desvio]%s %s\n' "$YEL" "$OFF" "$*"; }
 die()  { printf '\n%s[desvio] ERROR:%s %s\n' "$RED" "$OFF" "$*" >&2; exit 1; }
 
-# plural <count> <noun> — "1 file", "3 files". Only regular nouns.
+# plural <count> <noun> — "1 file", "3 files", "3 branches".
+#
+# The -es case is not pedantry: "branch" is the noun this tool says most often,
+# and "3 branchs" in the middle of an error message reads as a typo in the tool
+# rather than as information. Still only regular nouns beyond that.
 plural() {
-  if [ "$1" = 1 ]; then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi
+  if [ "$1" = 1 ]; then printf '%s %s' "$1" "$2"; return 0; fi
+  case "$2" in
+    *ch|*sh|*s|*x|*z) printf '%s %ses' "$1" "$2" ;;
+    *)                printf '%s %ss'  "$1" "$2" ;;
+  esac
 }
 
 rule() {
@@ -213,6 +221,11 @@ stamp_write() {
 # record of what the resolver was thinking when it gave up.
 resolver_log() { printf '%s/resolve-%s.log' "$DESVIO_STATE" "${1//\//-}"; }
 
+# bisect_log <k> <oid> — where one gate probe's output lives. A helper for the
+# same reason resolver_log is one: three places print this path, and if they
+# disagree the message tells you to open a file that is not there.
+bisect_log() { printf '%s/bisect-%s-%s.log' "$DESVIO_STATE" "$1" "${2:0:9}"; }
+
 # ---------- hooks ----------
 # has_hook <name> — is it defined by the config?
 has_hook() { declare -f "$1" >/dev/null 2>&1; }
@@ -222,4 +235,49 @@ run_hook() {
   local name="$1"; shift
   has_hook "$name" || return 0
   "$name" "$@"
+}
+
+# run_gate <name> — run a hook and SURVIVE its failure. Sets GATE_STATUS.
+#
+# Three things here are load-bearing, and two of them are not obvious:
+#
+#   1. It reports through a global rather than returning. A function that
+#      RETURNS non-zero is, under `set -e`, indistinguishable from a crash: it
+#      kills the script at the call site. The caller has to be able to write
+#      `run_gate desvio_verify` as a bare command and still be alive on the
+#      next line, which is the whole point.
+#
+#   2. It is NOT written `"$name" || GATE_STATUS=$?`. A command on the left of
+#      `||` runs with errexit disabled, and that disabling reaches all the way
+#      INSIDE the hook — past an explicit `set -e` in a subshell, too. A
+#      two-command gate whose first command fails would then run its second
+#      command anyway and report the SECOND one's status. For the gate this
+#      tool exists to protect, that is: typecheck fails, lint runs anyway, lint
+#      passes, build reports GREEN. Measured on bash 3.2.57 and 5.3.15:
+#
+#        h(){ echo first; false; echo "SECOND RAN"; }
+#        ( set -e; h ) || s=$?             → first / SECOND RAN / status=0
+#        set +e; ( set -e; h ); s=$?       → first / status=1
+#
+#   3. So: `set +e` on the OUTER shell, and a foreground subshell that arms
+#      `set -e` for itself. Nothing is part of a `||` list, so the arming
+#      sticks and the hook still aborts at its first failing command, exactly
+#      as it does when called through run_hook.
+#
+# A background subshell with `wait $!` reports the right status too, and is
+# rejected: an async subshell in a non-interactive shell ignores SIGINT, so
+# Ctrl-C during a five-minute typecheck would kill desvio and leave npm running.
+#
+# The subshell means a gate hook's variable assignments do not escape. Hooks
+# already communicate by file (stamp_write) and exit status, so that costs
+# nothing today — but it is the one way desvio_verify differs from the other
+# four hooks, and the next person to add a hook should know it.
+# shellcheck disable=SC2034  # GATE_STATUS is read by cmd-build.sh and bisect.sh
+run_gate() {
+  local name="$1"
+  set +e
+  ( set -e; "$name" )
+  GATE_STATUS=$?
+  set -e
+  return 0
 }

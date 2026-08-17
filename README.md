@@ -126,6 +126,45 @@ A real one, from the build this tool came out of. Upstream started validating pe
 
 So `desvio_verify` is not optional decoration. Make it the strictest check you are willing to wait for. desvio warns on every build that has no gate.
 
+## Which branch broke the gate?
+
+A gate failure names a file. It does not name a branch, and the branch is what you need — with sixteen manifest lines, four merges stacked above the culprit, and an error in a file none of them appear to touch, "which of mine did this" can cost more than the fix.
+
+Two things answer it, cheapest first.
+
+**The resolver's own doubt.** A conflict is often only *half* of one change: git conflicts on the part where both sides edited the same lines and merges the rest cleanly. Upstream deletes an import, your branch moves the code that used it — the deletion merges silently, the usage conflicts, and an agent that only looks at conflict regions fixes what it can see and leaves a file referencing symbols that no longer exist. Every guard passes, because there is no marker anywhere to catch.
+
+So the resolver is asked to read each conflicted file end to end afterwards, and given a third verdict for when it cannot repair what it finds:
+
+```
+   ! markdown-skill-commands       # PR #2084
+       Insert slash commands from agent output into the composer
+       1 file · auto-resolved, and the resolver was NOT sure
+       link.tsx references Shortcut and styles.tooltipBody with no import
+       state/resolve-markdown-skill-commands.log
+```
+
+That mark is a lead, not a verdict — the gate still decides. `DESVIO_SUSPECT=fail` stops at the merge instead, for when you would rather not wait for the gate to confirm it.
+
+**A bisect.** The integration branch is a straight chain of merge commits, one per manifest branch, in order. So the question is answerable by re-running the gate over that chain:
+
+```sh
+desvio build --bisect-gate
+```
+
+It binary-searches for the first merge where the gate breaks, then spends one more probe merging that branch onto the plain base alone — because "broken against upstream" and "broken against the branches above it" want opposite fixes, and it should not guess between them. It ends by naming the branch, its manifest line, and the command to rebase it.
+
+Off by default: an unasked-for multi-minute bisect appended to an already-failed build is not a kindness. `DESVIO_BISECT_GATE=1` opts in for unattended runs. Define `desvio_verify_quick` — the fast half of your gate — and the probes use that instead:
+
+```sh
+desvio_verify()       { in_tree npm run typecheck; in_tree npm run lint; }
+desvio_verify_quick() { in_tree npm run typecheck; }
+```
+
+If the quick hook does not reproduce the failure, desvio says so and refuses to bisect rather than name whichever branch the search happened to stop on. It refuses in three other cases too, for the same reason: when the base itself fails the gate (upstream, not you), when nothing fails on a second run (a gate that will not fail twice cannot be bisected), and it reports a break that needs two branches as a combination rather than accusing one of them.
+
+The tree is left exactly as it failed, including after Ctrl-C. Look at it there — but do not fix it there, because the next build resets and cleans it. Fixes belong on the topic branch.
+
 ## Configuration
 
 `desvio.conf` is sourced as bash: a value can be computed, and a hook is an ordinary function. It runs with your privileges, exactly like a Makefile in a repo you cloned. Paths are relative to the config file. Lookup order is `--config <file>`, `$DESVIO_CONFIG`, `./desvio.conf`, `$DESVIO_HOME/desvio.conf`.
@@ -144,6 +183,8 @@ So `desvio_verify` is not optional decoration. Make it the strictest check you a
 | `DESVIO_AUTO_RESOLVE` | `1` | |
 | `DESVIO_RESOLVER_MODEL` | `opus` | |
 | `DESVIO_RESOLVER_EFFORT` | `high` | one conflict costs one agent call and rerere then replays it forever, so buy the thinking |
+| `DESVIO_SUSPECT` | `warn` | `fail` to stop the build when the resolver flags its own resolution |
+| `DESVIO_BISECT_GATE` | `0` | `1` to bisect automatically when the gate fails |
 
 Hooks, all optional, called in this order:
 
@@ -154,8 +195,9 @@ Hooks, all optional, called in this order:
 | `desvio_seed` | anything generated that the gate needs and git ignores |
 | `desvio_build` | compile |
 | `desvio_verify` | **the gate** |
+| `desvio_verify_quick` | the fast half of the gate, used only by `--bisect-gate`. If it does not reproduce a failure, desvio refuses to bisect rather than guess |
 | `desvio_next_steps` | printed under the summary |
-| `desvio_resolve_conflict` | replace the built-in resolver. Takes `<topic> <subject>`, returns 0 when every marker is gone |
+| `desvio_resolve_conflict` | replace the built-in resolver. Takes `<topic> <subject>`, returns 0 when every marker is gone. May set `RESOLVER_SUSPECT` to one line when it cleared every marker but believes the result is still broken |
 
 Inside a hook you have `log`, `warn`, `die`, `in_tree <cmd...>`, `gitw`/`gitr`, and `stamp_changed`/`stamp_write` for skipping work when nothing moved:
 
@@ -223,8 +265,10 @@ CI runs the suite on Linux and macOS, and on macOS a second time with `/bin/bash
 
 ## Known sharp edges
 
-- **A stale rerere resolution can be wrong.** rerere matches on conflict text, so a resolution recorded from one merge can replay into a different one. desvio refuses to commit a file that still holds conflict markers, but a resolution that dropped a side leaves no markers to find. The gate is what catches it. To drop one: `git rerere forget <path>` during the merge.
+- **A stale rerere resolution can be wrong.** rerere matches on conflict text, so a resolution recorded from one merge can replay into a different one. desvio refuses to commit a file that still holds conflict markers, but a resolution that dropped a side leaves no markers to find. The gate is what catches it — and once a bad resolution is recorded, every later build replays it silently and reports a green *conflict replayed from rerere*. To be rid of one: `desvio build --forget <branch>`, which merges that branch with rerere off so the conflict comes back, forgets the recorded answer, and records the replacement. One build fixes it permanently. A **rebased** branch needs none of this: rerere keys on the text of the conflict, so a rebase produces a different conflict and the stale entry simply stops matching.
 - **A clean merge is not a correct merge.** See above.
+- **Bisecting shares one `node_modules`.** Probes clean with the same `DESVIO_CLEAN_KEEP` as a build, so an install hook without a `stamp_changed` guard reinstalls at every probe. And a failure caused by something `KEEP` preserves follows the search all the way down to the base, where desvio reports it as upstream's — which is why that verdict raises the possibility itself.
+- **A bisect finds *a* break, not every break.** Binary search returns a pass→fail pair it actually observed, so the branch it names is genuinely broken there. If two branches are independently broken you will find the second one on the next run.
 - **One worktree.** Anything that reads the tree while desvio rewrites it will misbehave; that is what `desvio_preflight` is for.
 - **The agent needs `claude` on your PATH** and uses your account.
 

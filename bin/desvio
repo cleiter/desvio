@@ -24,6 +24,7 @@ DESVIO_HOME="${DESVIO_HOME:-$HOME/.desvio}"
 . "$DESVIO_LIB/common.sh"
 . "$DESVIO_LIB/resolve.sh"
 . "$DESVIO_LIB/cmd-build.sh"
+. "$DESVIO_LIB/bisect.sh"
 . "$DESVIO_LIB/cmd-init.sh"
 . "$DESVIO_LIB/cmd-run.sh"
 

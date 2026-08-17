@@ -78,6 +78,30 @@ run_desvio build
 
 assert_eq 3 "$STATUS" "the gate's exit status is the build's"
 assert_contains "$OUT" "gate: desvio_verify" "it says it ran the gate"
+assert_not_contains "$OUT" "is ready" "no green banner over a failed gate"
+
+# ---------------------------------------------------------------------------
+# The gate has to run with `set -e` ARMED INSIDE IT, and catching its failure
+# without losing that is the whole difficulty. Written the obvious way —
+# `run_hook desvio_verify || GATE_STATUS=$?` — the hook runs with errexit
+# disabled, so a two-command gate whose first command fails runs the second one
+# anyway and reports the SECOND one's status. For the real thing that means:
+# typecheck fails, lint runs anyway, lint passes, build reports GREEN.
+#
+# Measured on bash 3.2.57 and 5.3.15; an explicit `set -e` in a subshell does
+# not save you either, because the ignore-errexit state propagates in. See
+# run_gate in lib/common.sh.
+#
+# Mutation check: swapping run_gate back to the `||` form fails exactly this
+# test and nothing else in the suite.
+it "a gate whose first command fails does not pass because its last one succeeded"
+setup
+fixture_config 'desvio_verify() { false; true; }'
+manifest alpha
+run_desvio build
+
+if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+assert_not_contains "$OUT" "is ready" "and prints no green banner"
 
 # ---------------------------------------------------------------------------
 it "no gate at all is loud but not fatal"

@@ -19,6 +19,12 @@ usage: desvio build [<base>] [options]
   --assemble-only   merge, then stop. No install, no gate.
   --no-resolve      never call the agent; stop at the first conflict.
   --keep-going      report a failed branch and carry on with the rest.
+  --bisect-gate     when the gate fails, re-run it over the merge chain to find
+                    the branch that broke it. Costs a handful more gate runs;
+                    define desvio_verify_quick to make them cheap.
+  --forget <branch> ignore this branch's recorded rerere resolution and resolve
+                    the conflict again from scratch. Repeatable. For when a
+                    resolution was wrong and every build has been replaying it.
 
 Use a pinned base to reproduce yesterday's build, or to sit out a broken
 upstream. The merges replay the same way; only the floor moves.
@@ -30,14 +36,23 @@ EOF
 }
 
 cmd_build() {
-  local base_ref="" assemble_only=0 keep_going=0
+  # do_bisect starts EMPTY, not 0. The config that may also set it has not been
+  # sourced yet — load_config runs below, after this loop — so "the user did not
+  # pass a flag" and "the user passed --no-bisect-gate" have to stay
+  # distinguishable until there is a config to fall back to.
+  local base_ref="" assemble_only=0 keep_going=0 do_bisect=""
+  local -a FORGET; FORGET=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --assemble-only) assemble_only=1 ;;
-      --no-resolve)    DESVIO_AUTO_RESOLVE=0 ;;
-      --keep-going)    keep_going=1 ;;
-      -h|--help)       cmd_build_usage; return 0 ;;
-      -*)              die "unknown option: $1" ;;
+      --assemble-only)  assemble_only=1 ;;
+      --no-resolve)     DESVIO_AUTO_RESOLVE=0 ;;
+      --keep-going)     keep_going=1 ;;
+      --bisect-gate)    do_bisect=1 ;;
+      --no-bisect-gate) do_bisect=0 ;;
+      --forget)         shift; [ $# -gt 0 ] || die "--forget needs a branch name"
+                        FORGET+=("$1") ;;
+      -h|--help)        cmd_build_usage; return 0 ;;
+      -*)               die "unknown option: $1" ;;
       *)
         [ -z "$base_ref" ] || die "more than one base given: '$base_ref' and '$1'"
         base_ref="$1" ;;
@@ -46,6 +61,10 @@ cmd_build() {
   done
 
   load_config
+  # The flag wins over the config; the config knob exists so an unattended run
+  # can opt in once. Resolved here rather than in the parse loop because
+  # DESVIO_BISECT_GATE does not exist until load_config has sourced the config.
+  [ -n "$do_bisect" ] || do_bisect="${DESVIO_BISECT_GATE:-0}"
   acquire_build_lock
   [ -n "$base_ref" ] || base_ref="$DESVIO_BASE"
 
@@ -154,20 +173,42 @@ $(printf '    %s\n' "${MISSING[@]}")
   # ---------- merge ----------
   # Parallel indexed arrays, not an associative one: /bin/bash on macOS is 3.2
   # and has no `declare -A`.
-  local -a HOW NFILES SUBJECTS DEAD FAILED
-  HOW=(); NFILES=(); SUBJECTS=(); DEAD=(); FAILED=()
+  local -a HOW NFILES SUBJECTS MERGES SUSPECT DEAD FAILED
+  HOW=(); NFILES=(); SUBJECTS=(); MERGES=(); SUSPECT=(); DEAD=(); FAILED=()
   local b before after n refs_before
 
   for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
     b="${BRANCHES[$i]}"; oid="${OIDS[$i]}"
     before=$(gitw rev-parse HEAD)
-    HOW+=("clean"); NFILES+=("0")
+    HOW+=("clean"); NFILES+=("0"); SUSPECT+=("")
+    # Empty until the branch actually produces a commit. A branch that was
+    # already upstream produced none, and one that --keep-going abandoned was
+    # never merged; there is nothing to check out for either, so neither can be
+    # the branch a gate bisect accuses.
+    MERGES+=("")
     SUBJECTS+=("$(gitw log -1 --format=%s "$oid")")
+
+    # --forget: merge this one branch with rerere switched OFF, so the recorded
+    # resolution cannot replay and the conflict comes back with its markers. The
+    # forgetting itself happens below, once there is a live conflict to forget —
+    # `git rerere forget` works on the CURRENT conflict, and with autoupdate on
+    # there is no current conflict to speak of by the time a replay has staged
+    # everything. Measured: forgetting after a replay drops the cache entry but
+    # leaves the replayed content in the tree, which would commit the very
+    # resolution you asked to be rid of.
+    #
+    # ${rr[@]+...} because expanding an empty array under `set -u` on bash 3.2
+    # is an abort, not an empty string.
+    local -a rr; rr=()
+    if in_forget_list "$b"; then
+      rr=(-c rerere.enabled=false)
+      log "  $b — --forget: ignoring any recorded resolution"
+    fi
 
     # --no-ff so a contribution always produces a merge commit. A fast-forward
     # would leave HEAD^ pointing at the topic's own parent, and the before/after
     # comparison below would read the wrong range.
-    if ! gitw merge --no-ff --no-edit -m "merge $b into $DESVIO_BRANCH" "$oid"; then
+    if ! gitw ${rr[@]+"${rr[@]}"} merge --no-ff --no-edit -m "merge $b into $DESVIO_BRANCH" "$oid"; then
       if [ -z "$(gitw ls-files -u)" ] && gitw rev-parse -q --verify MERGE_HEAD >/dev/null; then
         # rerere replayed a known resolution: `git merge` still exits non-zero
         # and leaves MERGE_HEAD, but every conflicted path is already staged.
@@ -181,6 +222,7 @@ $(printf '    %s\n' "${MISSING[@]}")
       elif [ "$DESVIO_AUTO_RESOLVE" = "1" ]; then
         refs_before=$(snapshot_refs)
         snapshot_conflicted
+        forget_recorded "$b"
         if resolve_conflict "$b" "${SUBJECTS[$i]}"; then
           assert_refs_unchanged "$refs_before"
           assert_resolver_scope "$b"
@@ -193,6 +235,19 @@ $(printf '    %s\n' "${MISSING[@]}")
           gitw commit --no-edit -q
           HOW[$i]="auto-resolved"
           log "  $b — conflict auto-resolved (recorded in rerere)"
+          # The resolver removed every marker and still thinks the result is
+          # broken. Markers cannot check that, so carry it to the summary, where
+          # it is read, instead of leaving it in a transcript, where it is not.
+          if [ -n "${RESOLVER_SUSPECT:-}" ]; then
+            SUSPECT[$i]="$RESOLVER_SUSPECT"
+            HOW[$i]="auto-resolved-suspect"
+            warn "  $b — the resolver was not sure: $RESOLVER_SUSPECT"
+            [ "${DESVIO_SUSPECT:-warn}" = "fail" ] &&
+              die "'$b': the resolver flagged its own resolution and
+  DESVIO_SUSPECT=fail. Nothing further was merged.
+    $RESOLVER_SUSPECT
+  Transcript: $(resolver_log "$b")"
+          fi
         else
           assert_refs_unchanged "$refs_before"
           if [ "$keep_going" = 1 ]; then
@@ -212,6 +267,12 @@ $(printf '    %s\n' "${MISSING[@]}")
         FAILED+=("$b"); HOW[$i]="unresolved"
         continue
       else
+        # Forget before dying, not after: the conflict is left in the tree for
+        # you to resolve by hand, and the commit you make there is what records
+        # the replacement. Dying first would leave the stale entry in the cache
+        # and your hand resolution would be overwritten by it on the next build.
+        snapshot_conflicted
+        forget_recorded "$b"
         conflict_death "$b" "auto-resolution is off (--no-resolve)."
       fi
     fi
@@ -223,6 +284,7 @@ $(printf '    %s\n' "${MISSING[@]}")
     else
       n=$(gitw diff --name-only "$before..$after" | wc -l | tr -d ' ')
       NFILES[$i]="$n"
+      MERGES[$i]="$after"
       log "  $b → $(plural "$n" file)"
     fi
   done
@@ -257,7 +319,30 @@ $(printf '    %s\n' "${MISSING[@]}")
   local gated="no gate configured — nothing verified this build"
   if has_hook desvio_verify; then
     log "gate: desvio_verify"
-    run_hook desvio_verify
+    # run_gate, not run_hook: a failing gate must not kill the script HERE.
+    # Everything below — the attribution, the exit status, the hint — exists
+    # only because the failure is caught. See run_gate for why this cannot be
+    # spelled `run_hook desvio_verify || GATE_STATUS=$?`.
+    run_gate desvio_verify
+    # Save it NOW. Every bisect probe runs through run_gate too, so GATE_STATUS
+    # by the end holds whatever the last probe returned — and the last probe is
+    # often a passing one. Returning that would exit 0 from a build whose gate
+    # failed, which is the one outcome none of this is allowed to produce.
+    local gate_status="$GATE_STATUS"
+    if [ "$gate_status" -ne 0 ]; then
+      # No build_summary on this path. Its first line is "$DESVIO_NAME is
+      # ready", and a green banner over a build that failed its gate is the
+      # exact lie the gate exists to prevent.
+      if [ "$do_bisect" = 1 ]; then
+        bisect_gate "$base"
+      else
+        gate_failed_hint "$gate_status"
+      fi
+      # The gate's own status, unchanged. `desvio build` exiting with the code
+      # your gate exited with is what CI reads, and tests/test-assembly.sh
+      # pins it at 3.
+      return "$gate_status"
+    fi
     gated="gate passed: desvio_verify"
   else
     warn "no desvio_verify hook — this build was not verified.
@@ -297,7 +382,33 @@ acquire_build_lock() {
   fi
   printf '%s' "$$" > "$dir/pid"
   # EXIT covers `die`, which exits 1.
-  trap 'rm -rf "$DESVIO_LOCK_DIR"' EXIT INT TERM
+  trap build_cleanup EXIT INT TERM
+}
+
+# One trap for the whole build: drop the lock, and put the worktree back on the
+# integration branch if a bisect was in flight.
+#
+# The restore is not a courtesy. Probing checks out DETACHED commits, and
+# assert_worktree_ours refuses to adopt a tree that is not on $DESVIO_BRANCH —
+# so a Ctrl-C during a bisect would make the NEXT build die with "the worktree
+# is on a detached HEAD", telling you to remove a worktree to fix a state that
+# desvio itself left behind.
+#
+# DESVIO_BISECT_RESTORE is global and holds the OID rather than a flag: a trap
+# body is evaluated when the trap FIRES, by which point a local is long out of
+# scope and there would be nothing to restore to.
+#
+# `|| true` on each step because this runs from a trap, quite possibly on the
+# way out of an already-failed build, and a restore that itself died would
+# replace a useful error message with a useless one.
+build_cleanup() {
+  if [ -n "${DESVIO_BISECT_RESTORE:-}" ]; then
+    gitw checkout -q --detach 2>/dev/null || true
+    gitw reset -q --hard "$DESVIO_BISECT_RESTORE" 2>/dev/null || true
+    gitw checkout -q "$DESVIO_BRANCH" 2>/dev/null || true
+    DESVIO_BISECT_RESTORE=""
+  fi
+  rm -rf "$DESVIO_LOCK_DIR"
 }
 
 # ---------- guards ----------
@@ -348,6 +459,48 @@ build_guards() {
     gitw reset --hard --quiet
     gitw clean -fdq ${DESVIO_CLEAN_KEEP:+$DESVIO_CLEAN_KEEP}
   fi
+}
+
+# ---------- --forget ----------
+#
+# rerere is the reason a second build is fast, and it is also the reason a BAD
+# resolution is permanent: it is recorded the moment the merge commit is made,
+# and every build after that replays it silently and reports a green
+# "conflict replayed from rerere". Nothing in the summary distinguishes a
+# resolution you trust from one that broke the gate three builds ago.
+#
+# --forget is the way out. Note that a REBASED branch does not need it: rerere
+# keys on the text of the conflict, so a rebase produces a different conflict
+# and the stale entry simply stops matching. --forget is for the case where you
+# cannot rebase, or do not want to.
+in_forget_list() {
+  local want="$1" f
+  # `${FORGET[@]+...}`: bash 3.2 with `set -u` aborts on an empty expansion,
+  # and an empty forget list is the overwhelmingly common case.
+  for f in ${FORGET[@]+"${FORGET[@]}"}; do
+    [ "$f" = "$want" ] && return 0
+  done
+  return 1
+}
+
+# forget_recorded <topic> — drop this conflict's recorded resolution.
+#
+# Called only with a LIVE conflict in the tree, which is the whole subtlety:
+# `git rerere forget` acts on the current conflict, and after a replay there is
+# no current conflict left to act on. That is why the merge above runs with
+# rerere disabled for a --forget branch — it is what keeps the markers and the
+# unmerged entries around long enough for this to mean something.
+#
+# The merge ran with rerere off; the COMMIT does not. So the resolution made
+# after this call is recorded normally, replacing what was forgotten, and one
+# build fixes the cache permanently.
+forget_recorded() {
+  local topic="$1"
+  in_forget_list "$topic" || return 0
+  [ "${#CONFLICTED[@]}" -gt 0 ] || return 0
+  gitw rerere forget -- "${CONFLICTED[@]}" >/dev/null 2>&1 ||
+    warn "  $topic — nothing recorded to forget"
+  log "  $topic — forgot the recorded resolution, resolving from scratch"
 }
 
 conflict_death() {
@@ -500,6 +653,8 @@ build_summary() {
         "already upstream") mark="${YEL}○${OFF}"; stat="${YEL}already upstream — drop this manifest line${OFF}" ;;
         "unresolved")       mark="${RED}✗${OFF}"; stat="${RED}left out — conflict unresolved${OFF}" ;;
         "auto-resolved")    mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · conflict auto-resolved${OFF}" ;;
+        "auto-resolved-suspect")
+                            mark="${YEL}!${OFF}"; stat="${YEL}$(plural "${NFILES[$i]}" file) · auto-resolved, and the resolver was NOT sure${OFF}" ;;
         "rerere")           mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · conflict replayed from rerere${OFF}" ;;
         *)                  mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file)${OFF}" ;;
       esac
@@ -511,6 +666,14 @@ build_summary() {
       fi
       printf "       %s%s%s\n" "$DIM" "${SUBJECTS[$i]}" "$OFF"
       printf "       %b\n" "$stat"
+      # What the resolver was unsure about, and where to read the rest of it.
+      # A clean merge tells you nothing; a resolver saying "I merged this and I
+      # think it is broken" tells you a great deal, and it belongs here rather
+      # than in a transcript nobody opens.
+      if [ -n "${SUSPECT[$i]}" ]; then
+        printf "       %s%s%s\n" "$YEL" "${SUSPECT[$i]}" "$OFF"
+        printf "       %s%s%s\n" "$DIM" "$(resolver_log "${BRANCHES[$i]}")" "$OFF"
+      fi
     done
   fi
 

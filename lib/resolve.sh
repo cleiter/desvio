@@ -25,8 +25,19 @@
 # it.
 
 # resolve_conflict <topic> <subject>
+#
 # Returns 0 if every marker is gone, non-zero to leave the tree for a human.
+#
+# Also sets RESOLVER_SUSPECT: empty when the resolver is confident, otherwise
+# one line saying what it thinks is still broken. A second return value needs a
+# global — bash 3.2 has nothing better — and it is cleared here rather than in
+# the resolvers so that a resolver which never sets it cannot leak the previous
+# branch's doubt into this branch's summary line.
+#
+# A custom desvio_resolve_conflict hook may set RESOLVER_SUSPECT too; it is part
+# of the hook's contract.
 resolve_conflict() {
+  RESOLVER_SUSPECT=""
   if has_hook desvio_resolve_conflict; then
     desvio_resolve_conflict "$@"
     return $?
@@ -88,13 +99,34 @@ Your job:
   code around you.
 - Do not run tests, do not reformat, do not fix unrelated things.
 
+A CONFLICT IS OFTEN ONLY HALF OF ONE CHANGE. Git may have merged the other half
+CLEANLY, with no marker anywhere to show for it — upstream deleted an import, a
+helper, a field, a style entry, and the topic moved or kept the code that uses
+it. You will not see that in a conflict region, and it is the single commonest
+way a merge with no markers left in it is still broken.
+
+So once the markers are gone, read each conflicted file END TO END and check
+that what the merged result now references still exists: imports, helpers,
+types, constants, style keys, call signatures. Repairing that, in a file that
+was already conflicted, is IN SCOPE and expected of you — it is part of the
+merge, not an unrelated fix. What stays out of scope is other files and other
+problems.
+
 If a conflict cannot be resolved faithfully — the two sides genuinely contradict
 each other and picking either loses behaviour — STOP, leave that file's markers
 untouched, and end your reply with exactly UNRESOLVED on its own line, followed
 by one sentence saying which file and why.
 
-When you are done and every marker is gone, end your reply with exactly RESOLVED
-on its own line." \
+If you removed every marker but still believe the merged result is broken — a
+symbol that no longer exists, a call whose signature moved, something you could
+not repair from inside the conflicted files — end your reply with exactly
+RESOLVED-SUSPECT on its own line, followed by one sentence saying what and
+where. Say it here rather than only in prose: this line is the only part of your
+reply desvio reads back, and it is what puts a warning next to this branch in
+the build summary instead of a clean tick.
+
+When you are done, every marker is gone, and you believe the result is sound,
+end your reply with exactly RESOLVED on its own line." \
       --model "$DESVIO_RESOLVER_MODEL" \
       --effort "$DESVIO_RESOLVER_EFFORT" \
       --permission-mode acceptEdits \
@@ -114,6 +146,27 @@ on its own line." \
     warn "conflict markers still present in:"
     printf '       %s\n' "${left[@]}"
     return 1
+  fi
+
+  # ...but a verdict the markers CANNOT check is worth keeping. RESOLVED-SUSPECT
+  # means the agent removed every marker and still thinks the result is broken —
+  # typically because the other half of a split change merged cleanly and it
+  # could not repair it from inside the conflict set.
+  #
+  # This is additive information, never a veto: a false suspicion costs one
+  # warning line, and the gate remains the thing that decides. Which is exactly
+  # why it is worth reading — the one time this mattered in anger, the agent
+  # said the file would not typecheck, said it in prose in a transcript nobody
+  # opened, and the build printed a green tick over it.
+  #
+  # Read back from the transcript rather than capturing the pipeline twice: it
+  # is already tee'd there, and the file is the thing the summary points at.
+  local log; log=$(resolver_log "$topic")
+  if [ -f "$log" ] && grep -q '^RESOLVED-SUSPECT' "$log"; then
+    # The sentence after the verdict, if it gave one, else the verdict alone.
+    RESOLVER_SUSPECT=$(sed -n 's/^RESOLVED-SUSPECT[[:space:]]*//p; /^RESOLVED-SUSPECT$/{n;p;}' "$log" |
+      grep -v '^[[:space:]]*$' | head -1)
+    [ -n "$RESOLVER_SUSPECT" ] || RESOLVER_SUSPECT="the resolver did not say what"
   fi
   return 0
 }
