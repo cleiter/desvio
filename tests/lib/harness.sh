@@ -176,6 +176,75 @@ topic_branch() {
   git -C "$REPO" checkout -q main
 }
 
+# ---------- other people's repositories ----------
+#
+# A manifest line can name a branch on a remote that is not $DESVIO_REMOTE. The
+# fixture for that is a SECOND bare repo, cloned from $ORIGIN so its history is
+# compatible, plus a work clone to author commits in — pushing to a bare repo
+# needs somewhere to commit first.
+#
+# Deliberately no fetch after `git remote add`: several tests exist to prove that
+# desvio does the fetching, and a fixture that pre-fetched would pass them for
+# the wrong reason.
+
+# fork_remote <name> — a second remote, registered in the checkout, never fetched.
+# Slashes are legal in a remote name (`team/alice`), so the on-disk path flattens
+# them while the remote keeps the real name.
+fork_remote() {
+  local name="$1" safe="${1//\//-}"
+  git clone -q --bare "$ORIGIN" "$TEST_TMP/$safe.git"
+  git clone -q "$TEST_TMP/$safe.git" "$TEST_TMP/$safe-work"
+  git -C "$REPO" remote add "$name" "$TEST_TMP/$safe.git"
+}
+
+# fork_branch <remote> <branch> <file> <line> — author a commit on that fork and
+# push it there. Nothing about it reaches $REPO until desvio fetches.
+#
+# Called twice for the same branch, the second commit STACKS on the first rather
+# than replacing it — that is what a fork actually does between your builds, and
+# resetting to origin/main instead would make the push a rejected non-fast-forward.
+fork_branch() {
+  local branch="$2" file="$3" line="$4" w start
+  w="$TEST_TMP/${1//\//-}-work"
+  git -C "$w" fetch -q origin
+  if git -C "$w" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+    start="origin/$branch"
+  else
+    start="origin/main"
+  fi
+  git -C "$w" checkout -q -B "$branch" "$start"
+  printf '%s\n' "$line" >> "$w/$file"
+  git -C "$w" add -A
+  git -C "$w" commit -qm "$branch: change $file"
+  git -C "$w" push -q origin "$branch"
+}
+
+# fork_pr_ref <remote> <N> <file> <line> — the same, pushed to refs/pull/<N>/head
+# instead of a branch. No default refspec fetches that, which is the point.
+fork_pr_ref() {
+  local n="$2" file="$3" line="$4" w
+  w="$TEST_TMP/${1//\//-}-work"
+  git -C "$w" checkout -q -B "pr-$n" origin/main
+  printf '%s\n' "$line" >> "$w/$file"
+  git -C "$w" add -A
+  git -C "$w" commit -qm "pr $n: change $file"
+  git -C "$w" push -q origin "HEAD:refs/pull/$n/head"
+}
+
+# fork_delete_branch <remote> <branch> — the fork drops a branch, as happens the
+# day a PR lands.
+fork_delete_branch() {
+  local w; w="$TEST_TMP/${1//\//-}-work"
+  git -C "$w" push -q origin ":$2"
+}
+
+# break_remote <name> — point it at a path that does not exist, which is what a
+# deleted, renamed or gone-private fork looks like from here.
+break_remote() { git -C "$REPO" remote set-url "$1" "$TEST_TMP/gone.git"; }
+
+# tree_has <file> <text> — is that line in the build tree's copy of the file?
+tree_has() { grep -q "^$2\$" "$WORKTREE/$1" 2>/dev/null; }
+
 # fixture_config [extra conf lines...] — writes the build dir's desvio.conf and
 # points $DESVIO_CONFIG at it. Auto-resolve is OFF by default: a test must never
 # reach the real agent, which costs money and is not deterministic.

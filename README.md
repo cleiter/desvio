@@ -80,6 +80,21 @@ fix-something               # PR #1234
 new-thing-i-started-today   # no PR yet
 ```
 
+A line does not have to be a branch of your own. It can name a branch on any remote your checkout knows about, or a pull request directly:
+
+```
+alice/keyboard-shortcuts    # a colleague's branch, on her fork
+origin/pull/3206/head       # PR #3206, no fork to add
+```
+
+The remote has to exist already — `git remote add alice <url>` — and desvio does the fetching. Every build fetches `origin` plus every remote the manifest names, so a remote line is as current as a local one without you tracking anything.
+
+**Local wins.** A bare name means what it always meant, and even a slashed one is a local branch first: with both a local `alice/keyboard-shortcuts` and that ref on the remote, the local branch is what gets merged. So nothing you already have in a manifest changes meaning.
+
+**A pull request is written as its ref, verbatim.** `origin/pull/3206/head` on GitHub, `origin/merge-requests/3206/head` on GitLab. desvio knows nothing about either — it takes the path you wrote and fetches it — which is also why it works on Gerrit and anything else. That fetch is also what rescues a remote whose refspec is restricted, as a single-branch clone or `git remote add -t main` leaves it.
+
+**When a fork is unreachable, the build carries on.** Someone deletes their fork the day their PR lands; you are on a plane. desvio warns, uses the refs from the last successful fetch, and marks that branch `STALE` in the summary — because a stranger's housekeeping should not stop you building. `origin` is the exception: it is the floor every build stands on, so losing it is still fatal.
+
 **Order matters, and the rule is: the front is frozen, the back moves.** Merges resolve against everything already merged, so a branch's conflicts are decided by what sits above it. Move a line and every line below it can conflict differently, which throws away their recorded resolutions.
 
 - **Front** — branches that will never land upstream. They are permanent, so pay their conflict cost once, at the bottom of the stack where nothing disturbs them.
@@ -109,7 +124,9 @@ For that first time, desvio runs Claude Code on the conflicted files. A conflict
 **Your branches cannot be touched by it.** Two independent reasons:
 
 1. The agent runs with no shell tool, so it cannot run git at all, and its writes are confined to the worktree. Your refs live in the checkout's `.git`, outside that directory. This is structural, not a promise.
-2. Every branch OID is snapshotted before the agent starts and verified after. Anything that moved stops the build and prints the `update-ref` that puts it back.
+2. Every **local** branch's OID is snapshotted before the agent starts and verified after. Anything that moved stops the build and prints the `update-ref` that puts it back.
+
+Remote-tracking refs are deliberately outside that snapshot, and lose nothing by it: they are not something you can commit to, the agent has no network, and a `git fetch` restores any of them. A manifest line that names one is pinned to a single OID at the start of the build regardless, so nothing it merges can shift underneath it.
 
 desvio does not run that `update-ref` itself, on purpose. It cannot tell a misbehaving resolver from a commit you made in another worktree while the agent was thinking, and rewinding the second one would destroy real work. It stops, shows you the before and after OIDs, and lets you decide.
 
@@ -123,7 +140,7 @@ desvio does not clone. The build tree is a `git worktree` of `DESVIO_REPO`, so t
 - **A worktree registration** under `.git/worktrees/`.
 - **Objects.** Every commit, tree, and blob the assembly authors is written to your object database. The merges are real commits in your repo, reachable from the integration branch.
 - **`rerere.enabled` and `rerere.autoupdate`,** set to `true` in your `.git/config` on every build. Recorded resolutions accumulate in `.git/rr-cache`, which is shared by all worktrees of the checkout.
-- **Remote-tracking refs,** moved by the `git fetch --prune` at the start of each build.
+- **Remote-tracking refs,** moved by the `git fetch --prune` at the start of each build — for `origin` and for every other remote the manifest names.
 
 Never your topic branches: nothing commits to them, and nothing is pushed anywhere. That is what the snapshot in [Conflicts](#conflicts) guarantees.
 
@@ -281,6 +298,7 @@ CI runs the suite on Linux and macOS, and on macOS a second time with `/bin/bash
 - **Bisecting shares one `node_modules`.** Probes clean with the same `DESVIO_CLEAN_KEEP` as a build, so an install hook without a `stamp_changed` guard reinstalls at every probe. And a failure caused by something `KEEP` preserves follows the search all the way down to the base, where desvio reports it as upstream's — which is why that verdict raises the possibility itself.
 - **A bisect finds *a* break, not every break.** Binary search returns a pass→fail pair it actually observed, so the branch it names is genuinely broken there. If two branches are independently broken you will find the second one on the next run.
 - **One worktree.** Anything that reads the tree while desvio rewrites it will misbehave; that is what `desvio_preflight` is for.
+- **A base on another remote is not fetched for you.** `desvio build fork/main` resolves against whatever `fork/main` was at your last fetch of it, unless the manifest also names a `fork/` line. The fetch set comes from the manifest, not from the base.
 - **The agent needs `claude` on your PATH** and uses your account.
 
 ## Example

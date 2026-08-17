@@ -71,6 +71,18 @@ EOF
 # the end of a line says why the line is there, and desvio prints it back to you
 # in the build summary.
 #
+# A line can also name a branch on another remote, or a pull request:
+#
+#   my-branch                 a local branch
+#   alice/keyboard-shortcuts  a branch on the remote `alice`
+#   origin/pull/3206/head     PR #3206, with no fork to add as a remote
+#
+# The remote has to exist already (git remote add alice <url>); desvio fetches
+# every remote this file names, on every build. Local wins: if you have a local
+# branch called `alice/keyboard-shortcuts`, that is what gets merged. A pull
+# request is written as its ref, verbatim — `pull/<N>/head` on GitHub,
+# `merge-requests/<N>/head` on GitLab; desvio does not need to know which.
+#
 # ORDER MATTERS, and the rule is: the front is frozen, the back moves.
 #
 # Merges are resolved against everything already merged, so a branch's conflicts

@@ -40,6 +40,82 @@ gitr()    { git -C "$DESVIO_REPO" "$@"; }
 gitw()    { git -C "$DESVIO_WORKTREE" "$@"; }
 in_tree() { ( cd "$DESVIO_WORKTREE" && "$@" ); }
 
+# ---------- topics ----------
+#
+# A manifest line names either a local branch — `feature-x` — or a branch on a
+# remote — `fork/feature-x`, `origin/pull/3206/head`. Local wins, so a bare name
+# means today exactly what it has always meant, and a slashed one only reaches a
+# remote when no local branch owns that name.
+#
+# NOT a bare `rev-parse --verify <name>`. git's own disambiguation would do
+# local-then-remote for us, but gitrevisions(7) checks refs/tags/ BEFORE
+# refs/heads/ — so a tag `v1.4` would silently shadow a branch `v1.4` in your
+# manifest, and you would build the wrong commit with no message at all.
+#
+# resolve_topic <name> — sets RESOLVED_OID and RESOLVED_FROM (`local`/`remote`),
+# and returns non-zero when nothing answers.
+#
+# Two globals rather than printing the OID, because the caller needs BOTH answers
+# and a printed one would have to be read through `$(...)` — a subshell, where an
+# assignment to RESOLVED_FROM dies with the subshell and never reaches the
+# caller. Asking a second time instead is not an option: the two lookups could
+# straddle a branch moving, and then the OID merged and the provenance reported
+# would come from two different moments.
+# shellcheck disable=SC2034  # RESOLVED_OID/RESOLVED_FROM are read by resolve_manifest in cmd-build.sh
+resolve_topic() {
+  RESOLVED_FROM=""
+  if RESOLVED_OID=$(gitr rev-parse --verify --quiet "refs/heads/$1^{commit}"); then
+    RESOLVED_FROM=local
+    return 0
+  fi
+  if RESOLVED_OID=$(gitr rev-parse --verify --quiet "refs/remotes/$1^{commit}"); then
+    RESOLVED_FROM=remote
+    return 0
+  fi
+  RESOLVED_OID=""
+  return 1
+}
+
+# remote_of <name> — the configured remote that owns this line, or nothing.
+#
+# LONGEST match wins, and that is not pedantry: git accepts a remote named
+# `team/alice`. With both `team` and `team/alice` configured, `${name%%/*}` would
+# answer `team` for a line belonging to `team/alice` — so desvio would fetch the
+# wrong remote and then report the branch as missing.
+remote_of() {
+  local name="$1" r best=""
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    case "$name" in
+      "$r"/*) [ "${#r}" -gt "${#best}" ] && best="$r" ;;
+    esac
+  done < <(gitr remote)
+  printf '%s' "$best"
+}
+
+# fetch_topic_ref <remote> <rest> — fetch one ref explicitly, into the place
+# resolve_topic will look for it.
+#
+# Only called when the ordinary lookup already missed, so it costs nothing on the
+# normal path. Two things land here:
+#
+#   1. A remote whose configured refspec does not cover the branch — a
+#      single-branch clone, or `git remote add -t main`. `git fetch <remote>`
+#      obeys that refspec, so the branch never arrives and desvio would report it
+#      as a branch that does not exist.
+#   2. A ref outside refs/heads entirely: `origin/pull/3206/head`. No forge is
+#      recognised here and none needs to be — the line says where the ref lives,
+#      and GitHub, GitLab and Gerrit all just work out of the same two attempts.
+fetch_topic_ref() {
+  local remote="$1" rest="$2" src
+  for src in "refs/heads/$rest" "refs/$rest"; do
+    if gitr fetch --quiet "$remote" "+$src:refs/remotes/$remote/$rest" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ---------- config ----------
 #
 # desvio.conf is sourced, not parsed: a hook is a bash function, and a config

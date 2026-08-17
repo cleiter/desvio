@@ -77,8 +77,14 @@ cmd_build() {
   gitr config rerere.enabled true
   gitr config rerere.autoupdate true
 
-  log "fetching $DESVIO_REMOTE"
-  gitr fetch "$DESVIO_REMOTE" --prune
+  # Read the manifest BEFORE fetching: which remotes to fetch is derived from
+  # what the manifest names, and a remote branch cannot be resolved until its
+  # remote has been fetched. So the old single loop is now three ordered steps —
+  # parse, fetch, resolve — and the order is the whole point.
+  local -a BRANCHES OIDS NOTES MISSING STALE FAILED_REMOTES
+  BRANCHES=(); OIDS=(); NOTES=(); MISSING=(); STALE=(); FAILED_REMOTES=()
+  parse_manifest
+  fetch_remotes
 
   # Resolve the base ONCE and use the OID everywhere after. A branch ref is a
   # moving target, and resolving it twice in one run can straddle a fetch.
@@ -102,42 +108,7 @@ cmd_build() {
   run_hook desvio_preflight
   build_guards
 
-  # ---------- manifest ----------
-  # Resolve every branch to an OID up front. A branch that moves mid-run (a
-  # concurrent rebase in another worktree) must not assemble a build from two
-  # different moments in time.
-  local -a BRANCHES OIDS NOTES MISSING
-  BRANCHES=(); OIDS=(); NOTES=(); MISSING=()
-  local raw line note oid
-  while IFS= read -r raw || [ -n "$raw" ]; do
-    line="${raw%%#*}"
-    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    [ -z "$line" ] && continue
-    # Everything after the first `#` is why the line exists — the one piece of a
-    # manifest you cannot recover from git. Carry it into the summary, which is
-    # where you actually read it.
-    note=""
-    case "$raw" in
-      *'#'*) note="$(printf '%s' "${raw#*#}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;;
-    esac
-    if ! oid=$(gitw rev-parse --verify --quiet "refs/heads/$line^{commit}"); then
-      MISSING+=("$line")
-      continue
-    fi
-    BRANCHES+=("$line"); OIDS+=("$oid"); NOTES+=("$note")
-  done < "$DESVIO_MANIFEST"
-
-  # A named branch that does not exist is a broken manifest, not a build. Warning
-  # and carrying on produces the worst possible artefact: a green "ready" banner
-  # over a build that is quietly missing the feature you asked for. Nothing has
-  # been written yet at this point, so dying here costs nothing.
-  if [ "${#MISSING[@]}" -gt 0 ]; then
-    die "$DESVIO_MANIFEST names $(plural "${#MISSING[@]}" branch) that does not exist in $DESVIO_REPO:
-$(printf '    %s\n' "${MISSING[@]}")
-  Nothing was built. Either create the branch, fix the spelling, or — if it
-  landed upstream and you no longer need it — delete the line from the
-  manifest. Comment it out with '#' to sit it out for one build."
-  fi
+  resolve_manifest
 
   local base_subject base_when base_behind=""
   base_subject=$(gitr log -1 --format='%s' "$base")
@@ -164,7 +135,7 @@ $(printf '    %s\n' "${MISSING[@]}")
     # empty array expansion with `set -u` is an unbound-variable abort, which is
     # exactly the empty-manifest case above.
     for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
-      printf '       %-28s %s\n' "${BRANCHES[$i]}" "${OIDS[$i]:0:9}"
+      printf '       %-38s %s\n' "${BRANCHES[$i]}" "${OIDS[$i]:0:9}"
     done
   fi
 
@@ -361,6 +332,165 @@ $(printf '    %s\n' "${MISSING[@]}")
     "$base_behind" "$gated"
 }
 
+# ---------- manifest ----------
+#
+# Three ordered steps, because each one needs the previous one's answer:
+#
+#   parse_manifest    text only. Fills BRANCHES and NOTES.
+#   fetch_remotes     needs BRANCHES, to know which remotes to fetch at all.
+#   resolve_manifest  needs the fetch, to see a remote branch. Fills OIDS.
+#
+# All three fill the caller's arrays rather than printing them. bash locals are
+# dynamically scoped, so a `local -a BRANCHES` in cmd_build is what these
+# assign to — which is the only way to hand back three parallel arrays in bash
+# 3.2, where there is no `declare -A` and no nameref.
+
+# parse_manifest — the manifest as text. No git, so it is safe before the fetch.
+parse_manifest() {
+  local raw line note
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    line="${raw%%#*}"
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ -z "$line" ] && continue
+    # Everything after the first `#` is why the line exists — the one piece of a
+    # manifest you cannot recover from git. Carry it into the summary, which is
+    # where you actually read it.
+    note=""
+    case "$raw" in
+      *'#'*) note="$(printf '%s' "${raw#*#}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;;
+    esac
+    BRANCHES+=("$line"); NOTES+=("$note")
+  done < "$DESVIO_MANIFEST"
+}
+
+# fetch_remotes — fetch $DESVIO_REMOTE plus every remote the manifest names.
+#
+# $DESVIO_REMOTE first and always, even when no manifest line mentions it: the
+# base is resolved against it.
+#
+# The two failures are not the same failure. $DESVIO_REMOTE is the project you
+# follow and the floor every build stands on, so losing it is fatal, exactly as
+# before. The others are other people's repositories — a fork gets deleted the
+# day its PR lands, made private, renamed — and letting a stranger's housekeeping
+# stop every one of your builds would end the one-command rebuild this tool
+# exists for. Those warn, and the summary marks what they left stale.
+fetch_remotes() {
+  local i r s seen
+  local -a fetch_list; fetch_list=("$DESVIO_REMOTE")
+  for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
+    r=$(remote_of "${BRANCHES[$i]}")
+    [ -n "$r" ] || continue
+    seen=0
+    for s in ${fetch_list+"${fetch_list[@]}"}; do
+      [ "$s" = "$r" ] && { seen=1; break; }
+    done
+    [ "$seen" = 1 ] || fetch_list+=("$r")
+  done
+
+  for r in "${fetch_list[@]}"; do
+    log "fetching $r"
+    if gitr fetch "$r" --prune; then
+      continue
+    fi
+    [ "$r" != "$DESVIO_REMOTE" ] || die "cannot fetch '$r'.
+  Every build starts from it, so there is nothing to build on. Check the URL,
+  the network and your credentials:
+    git -C $DESVIO_REPO fetch $r"
+    # `git fetch` is not atomic, so some refs may already have moved before it
+    # gave up. That is harmless — git never leaves a half-written ref — but it
+    # is why this says "the last successful fetch" and not "the OID you had".
+    warn "cannot fetch '$r' — building on the refs from the last successful fetch"
+    FAILED_REMOTES+=("$r")
+  done
+}
+
+# resolve_manifest — every line to an OID, in ONE pass.
+#
+# One pass, not "check they all exist, then resolve them": a branch can move
+# between two passes — a rebase in another worktree — and then the build is
+# assembled from two different moments in time, which is the exact thing
+# resolving up front is meant to rule out.
+#
+# A miss appends to MISSING *and* pushes a placeholder into OIDS, so BRANCHES,
+# NOTES, OIDS and STALE stay index-aligned. The placeholder never survives: a
+# non-empty MISSING dies below, before anything reads OIDS.
+resolve_manifest() {
+  local i line remote rest
+  RESOLVED_OID=""; RESOLVED_FROM=""
+  for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
+    line="${BRANCHES[$i]}"
+    remote=$(remote_of "$line")
+
+    if ! resolve_topic "$line"; then
+      # Nothing under that name yet. If it names a remote, the remote's own
+      # refspec may simply not cover it, or it may be a ref outside refs/heads
+      # like pull/3206/head. One explicit fetch settles both.
+      if [ -n "$remote" ]; then
+        rest="${line#"$remote"/}"
+        if fetch_topic_ref "$remote" "$rest"; then
+          resolve_topic "$line" || true
+        fi
+      fi
+    fi
+
+    if [ -z "$RESOLVED_OID" ]; then
+      MISSING+=("$line"); OIDS+=(""); STALE+=("0")
+      continue
+    fi
+
+    # Stale only when the ref we actually used came from a remote we failed to
+    # fetch. A line that resolved to a LOCAL branch is never stale, however
+    # badly its same-named remote went — that remote was never consulted.
+    STALE+=("$(topic_is_stale "$RESOLVED_FROM" "$remote")")
+    OIDS+=("$RESOLVED_OID")
+  done
+
+  # A named branch that does not exist is a broken manifest, not a build. Warning
+  # and carrying on produces the worst possible artefact: a green "ready" banner
+  # over a build that is quietly missing the feature you asked for.
+  [ "${#MISSING[@]}" -eq 0 ] || die "$DESVIO_MANIFEST names $(plural "${#MISSING[@]}" branch) that does not exist in $DESVIO_REPO:
+$(missing_advice)
+  Nothing was built. Comment a line out with '#' to sit it out for one build."
+}
+
+# topic_is_stale <resolved_from> <remote> — 1 when the ref used came from a
+# remote this build could not reach.
+topic_is_stale() {
+  local from="$1" remote="$2" r
+  [ "$from" = "remote" ] && [ -n "$remote" ] || { printf '0'; return 0; }
+  for r in ${FAILED_REMOTES+"${FAILED_REMOTES[@]}"}; do
+    [ "$r" = "$remote" ] && { printf '1'; return 0; }
+  done
+  printf '0'
+}
+
+# missing_advice — one block per missing line, naming every reading that fits.
+#
+# Both readings, never just the remote one. `nosuch/feature-x` is a perfectly
+# ordinary local branch name — `feature/nested` is in this repo's own test suite
+# — so telling someone their remote is missing when they meant a local branch
+# sends them to fix the wrong thing.
+missing_advice() {
+  local line remote rest
+  for line in "${MISSING[@]}"; do
+    remote=$(remote_of "$line")
+    printf '    %s\n' "$line"
+    if [ -n "$remote" ]; then
+      rest="${line#"$remote"/}"
+      printf '      remote %s exists, but has no %s. Check the spelling, or\n' "$remote" "$rest"
+      printf '      whether it was deleted since: git -C %s ls-remote %s\n' "$DESVIO_REPO" "$remote"
+    else
+      printf '      no local branch by that name'
+      case "$line" in
+        */*) printf ', and no remote named %s\n' "${line%%/*}"
+             printf '      a remote branch: git -C %s remote add %s <url>\n' "$DESVIO_REPO" "${line%%/*}" ;;
+        *)   printf '\n' ;;
+      esac
+      printf '      a local branch:  git -C %s branch %s <start-point>\n' "$DESVIO_REPO" "$line"
+    fi
+  done
+}
+
 # ---------- lock ----------
 #
 # One build at a time per config. Two runs share one worktree and one
@@ -510,12 +640,22 @@ forget_recorded() {
   log "  $topic — forgot the recorded resolution, resolving from scratch"
 }
 
-# branch_oids <branch> — how many distinct commits this branch has ever pointed
-# at, per its reflog. 1 means it was created and never moved: no commit, no
-# merge, no reset. 0 means there is no reflog to go on (a fresh clone, an
+# branch_oids <branch> — how many distinct commits this LOCAL branch has ever
+# pointed at, per its reflog. 1 means it was created and never moved: no commit,
+# no merge, no reset. 0 means there is no reflog to go on (a fresh clone, an
 # expired one, or a ref that is not a local branch at all).
+#
+# refs/heads/ explicitly, because a manifest line may name a remote-tracking ref
+# and that ref's reflog counts FETCHES, not commits: `fork/feature-x` has
+# exactly one entry after its first fetch however many commits it carries. Left
+# unqualified, every remote line's first build would score 1 and be reported as
+# having no commits of its own. Scoring it 0 makes the heuristic abstain, which
+# is the honest answer — nothing on this side records what that branch did — and
+# costs nothing, because the message it would have chosen ends in "look for
+# uncommitted work in its worktree", and someone else's worktree is not yours to
+# look in. For a remote line both messages come down to the same advice.
 branch_oids() {
-  gitr reflog show --format=%H "$1" 2>/dev/null | sort -u | grep -c . || true
+  gitr reflog show --format=%H "refs/heads/$1" 2>/dev/null | sort -u | grep -c . || true
 }
 
 # dead_branch_why <i> <branch> <oid> <base> — why did merging this contribute
@@ -753,8 +893,10 @@ build_summary() {
         *)                  mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file)${OFF}" ;;
       esac
       if [ -n "${NOTES[$i]}" ]; then
-        # The manifest's own syntax, so it reads as the line it came from.
-        printf "   %b %s%-28s%s %s# %s%s\n" "$mark" "$B" "${BRANCHES[$i]}" "$OFF" "$DIM" "${NOTES[$i]}" "$OFF"
+        # The manifest's own syntax, so it reads as the line it came from. The
+        # column is wide enough for a remote-prefixed name; a shorter one just
+        # pads, and a longer one pushes its note right rather than truncating.
+        printf "   %b %s%-38s%s %s# %s%s\n" "$mark" "$B" "${BRANCHES[$i]}" "$OFF" "$DIM" "${NOTES[$i]}" "$OFF"
       else
         printf "   %b %s%s%s\n" "$mark" "$B" "${BRANCHES[$i]}" "$OFF"
       fi
@@ -773,6 +915,12 @@ build_summary() {
       if [ -n "${SUSPECT[$i]}" ]; then
         printf "       %s%s%s\n" "$YEL" "${SUSPECT[$i]}" "$OFF"
         printf "       %s%s%s\n" "$DIM" "$(resolver_log "${BRANCHES[$i]}")" "$OFF"
+      fi
+      # Staleness is its own axis, not another value of $stat: a stale branch can
+      # still have merged cleanly, replayed from rerere, or been dropped, and one
+      # field cannot carry both without a cross-product of states.
+      if [ "${STALE[$i]}" = "1" ]; then
+        printf "       %s%s%s\n" "$YEL" "STALE — $(remote_of "${BRANCHES[$i]}") could not be fetched this build" "$OFF"
       fi
     done
   fi
