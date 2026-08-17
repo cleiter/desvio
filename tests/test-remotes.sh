@@ -73,8 +73,9 @@ assert_eq 0 "$STATUS" "the build succeeds"
 if tree_has file.txt "local-nested"; then ok "the local branch was merged"; else fail "$CURRENT"; fi
 
 # ---------------------------------------------------------------------------
-# git accepts a remote named `team/alice`. Splitting on the FIRST slash would
-# answer `team` here, fetch the wrong remote, and then report the branch missing.
+# A repository can hold both a remote `team` and a remote `team/alice` (see
+# fork_remote). Splitting on the FIRST slash would answer `team` here, fetch the
+# wrong remote, and then report the branch missing.
 it "the longest matching remote name wins"
 setup
 fork_remote team

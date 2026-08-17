@@ -190,11 +190,21 @@ topic_branch() {
 # fork_remote <name> — a second remote, registered in the checkout, never fetched.
 # Slashes are legal in a remote name (`team/alice`), so the on-disk path flattens
 # them while the remote keeps the real name.
+#
+# `git remote add` since 2.54 refuses a name that is a prefix of an existing
+# remote, or has one as its prefix ("is a subset of existing remote 'team'").
+# Such a pair is still perfectly readable — older git added it happily, and so
+# does `git config` today — so registering it by hand is not cheating the test:
+# it builds the repository a user on 2.53 would hand to desvio on 2.54.
 fork_remote() {
   local name="$1" safe="${1//\//-}"
   git clone -q --bare "$ORIGIN" "$TEST_TMP/$safe.git"
   git clone -q "$TEST_TMP/$safe.git" "$TEST_TMP/$safe-work"
-  git -C "$REPO" remote add "$name" "$TEST_TMP/$safe.git"
+  if ! git -C "$REPO" remote add "$name" "$TEST_TMP/$safe.git" 2>/dev/null; then
+    git -C "$REPO" config "remote.$name.url" "$TEST_TMP/$safe.git"
+    git -C "$REPO" config "remote.$name.fetch" \
+      "+refs/heads/*:refs/remotes/$name/*"
+  fi
 }
 
 # fork_branch <remote> <branch> <file> <line> — author a commit on that fork and

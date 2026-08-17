@@ -78,8 +78,9 @@ resolve_topic() {
 
 # remote_of <name> — the configured remote that owns this line, or nothing.
 #
-# LONGEST match wins, and that is not pedantry: git accepts a remote named
-# `team/alice`. With both `team` and `team/alice` configured, `${name%%/*}` would
+# LONGEST match wins, and that is not pedantry: a remote can be named
+# `team/alice` (git 2.54 stopped ADDING one next to a remote `team`, but it still
+# reads the pairs older git wrote). With both configured, `${name%%/*}` would
 # answer `team` for a line belonging to `team/alice` — so desvio would fetch the
 # wrong remote and then report the branch as missing.
 remote_of() {
