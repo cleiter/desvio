@@ -173,14 +173,14 @@ $(printf '    %s\n' "${MISSING[@]}")
   # ---------- merge ----------
   # Parallel indexed arrays, not an associative one: /bin/bash on macOS is 3.2
   # and has no `declare -A`.
-  local -a HOW NFILES SUBJECTS MERGES SUSPECT DEAD FAILED
-  HOW=(); NFILES=(); SUBJECTS=(); MERGES=(); SUSPECT=(); DEAD=(); FAILED=()
+  local -a HOW NFILES SUBJECTS MERGES SUSPECT WHY DEAD EMPTY FAILED
+  HOW=(); NFILES=(); SUBJECTS=(); MERGES=(); SUSPECT=(); WHY=(); DEAD=(); EMPTY=(); FAILED=()
   local b before after n refs_before
 
   for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
     b="${BRANCHES[$i]}"; oid="${OIDS[$i]}"
     before=$(gitw rev-parse HEAD)
-    HOW+=("clean"); NFILES+=("0"); SUSPECT+=("")
+    HOW+=("clean"); NFILES+=("0"); SUSPECT+=(""); WHY+=("")
     # Empty until the branch actually produces a commit. A branch that was
     # already upstream produced none, and one that --keep-going abandoned was
     # never merged; there is nothing to check out for either, so neither can be
@@ -279,8 +279,11 @@ $(printf '    %s\n' "${MISSING[@]}")
 
     after=$(gitw rev-parse HEAD)
     if [ "$before" = "$after" ]; then
-      warn "  $b — contributed NOTHING (already upstream). Delete this manifest line."
-      DEAD+=("$b"); HOW[$i]="already upstream"
+      dead_branch_why "$i" "$b" "$oid" "$base"
+      HOW[$i]="$DEAD_HOW"; WHY[$i]="$DEAD_WHY"
+      # An empty branch is not a dead line. The line is right and the branch is
+      # wrong, so it must not end up in a list headed "delete these".
+      if [ "$DEAD_HOW" = "no commits" ]; then EMPTY+=("$b"); else DEAD+=("$b"); fi
     else
       n=$(gitw diff --name-only "$before..$after" | wc -l | tr -d ' ')
       NFILES[$i]="$n"
@@ -291,6 +294,10 @@ $(printf '    %s\n' "${MISSING[@]}")
 
   if [ "${#DEAD[@]}" -gt 0 ]; then
     warn "dead manifest lines: ${DEAD[*]}"
+  fi
+  if [ "${#EMPTY[@]}" -gt 0 ]; then
+    warn "branches with no commits at all: ${EMPTY[*]}
+  Keep the manifest lines. Check each branch's worktree for uncommitted work."
   fi
 
   if [ "$assemble_only" = 1 ]; then
@@ -503,6 +510,88 @@ forget_recorded() {
   log "  $topic — forgot the recorded resolution, resolving from scratch"
 }
 
+# branch_oids <branch> — how many distinct commits this branch has ever pointed
+# at, per its reflog. 1 means it was created and never moved: no commit, no
+# merge, no reset. 0 means there is no reflog to go on (a fresh clone, an
+# expired one, or a ref that is not a local branch at all).
+branch_oids() {
+  gitr reflog show --format=%H "$1" 2>/dev/null | sort -u | grep -c . || true
+}
+
+# dead_branch_why <i> <branch> <oid> <base> — why did merging this contribute
+# nothing? Sets DEAD_HOW (the summary's case label) and DEAD_WHY (the evidence).
+#
+# All the merge itself proves is that the tip was already reachable from HEAD.
+# desvio used to call every such branch "already upstream" and tell you to drop
+# the line, which is an assertion about a cause it never checked — and it is the
+# WRONG advice for the most common cause. A branch cut from the base and never
+# committed to also merges into nothing, and its tip carries an upstream
+# commit's subject, so the summary reads as though your feature had landed when
+# in fact it was never committed. Deleting that line loses the work.
+#
+# So: name the commit, always — that alone answers "landed where?" — and pick
+# between three messages:
+#
+#   the tip is in the base, and the branch never moved → no commits of its own.
+#     It is an upstream commit wearing your branch name.
+#   the tip is in the base otherwise → the branch's own commits really are in
+#     the base; upstream took them keeping the shas.
+#   the tip is not in the base at all → an EARLIER manifest line already
+#     brought it in; this one is a duplicate of that one.
+#
+# A branch that landed upstream via squash or rebase does not come through here
+# at all: its commits are rewritten, so the merge still produces a commit — an
+# empty one, reported as "0 files".
+dead_branch_why() {
+  local i="$1" b="$2" oid="$3" base="$4" j tip
+  tip="${oid:0:9} ${SUBJECTS[$i]}"
+  DEAD_HOW=""; DEAD_WHY=""
+
+  if gitw merge-base --is-ancestor "$oid" "$base"; then
+    # Topology cannot tell these two apart: a branch whose commits landed
+    # upstream and a branch that never had any BOTH end up pointing at a commit
+    # in the base, and in both cases `rev-list base..tip` is empty. The reflog
+    # can: a branch that was created and never committed to has only ever
+    # pointed at one commit. That is a hint, not a proof — reflogs expire and a
+    # fresh clone has none — so it only ever selects between two messages that
+    # both name the commit and let you judge.
+    if [ "$(branch_oids "$b")" = 1 ]; then
+      DEAD_HOW="no commits"
+      DEAD_WHY="its tip is $DESVIO_BASE's own $tip"
+      warn "  $b — contributed NOTHING: it has no commits of its own.
+  Its tip is a commit on $DESVIO_BASE:
+    $tip
+  Nothing was ever committed to this branch. Look for uncommitted work in its
+  worktree BEFORE you drop the manifest line."
+      return 0
+    fi
+    DEAD_HOW="already upstream"
+    DEAD_WHY="its own commits are in $DESVIO_BASE, up to $tip"
+    warn "  $b — contributed NOTHING: its commits are already in $DESVIO_BASE, up to
+    $tip
+  Drop this manifest line."
+    return 0
+  fi
+
+  for ((j = 0; j < i; j++)); do
+    if gitw merge-base --is-ancestor "$oid" "${OIDS[$j]}"; then
+      DEAD_HOW="already merged"
+      DEAD_WHY="${BRANCHES[$j]}, earlier in the manifest, already contains it"
+      warn "  $b — contributed NOTHING: '${BRANCHES[$j]}' is merged above it and
+  already contains its tip $tip. Drop one of the two lines."
+      return 0
+    fi
+  done
+
+  # Reachable from HEAD, not from the base, and not from any earlier line's tip
+  # — so an earlier merge RESOLUTION brought the content in without the tip
+  # being an ancestor of that line. Rare, and not worth a guess.
+  DEAD_HOW="already merged"
+  DEAD_WHY="something merged above it already contains $tip"
+  warn "  $b — contributed NOTHING: its tip $tip is already in the build,
+  brought in by a branch above it. Drop this manifest line."
+}
+
 conflict_death() {
   die "conflict merging '$1' — $2
   The conflict is LEFT IN PLACE. Resolve it by hand ONCE:
@@ -651,6 +740,11 @@ build_summary() {
     for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
       case "${HOW[$i]}" in
         "already upstream") mark="${YEL}○${OFF}"; stat="${YEL}already upstream — drop this manifest line${OFF}" ;;
+        # NOT "drop this line". The subject printed above is the base's, not
+        # yours, and the work this branch was named for may still be sitting
+        # uncommitted in its worktree.
+        "no commits")       mark="${YEL}○${OFF}"; stat="${YEL}nothing was ever committed to this branch${OFF}" ;;
+        "already merged")   mark="${YEL}○${OFF}"; stat="${YEL}contributed nothing — a branch above it already has it${OFF}" ;;
         "unresolved")       mark="${RED}✗${OFF}"; stat="${RED}left out — conflict unresolved${OFF}" ;;
         "auto-resolved")    mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · conflict auto-resolved${OFF}" ;;
         "auto-resolved-suspect")
@@ -666,6 +760,12 @@ build_summary() {
       fi
       printf "       %s%s%s\n" "$DIM" "${SUBJECTS[$i]}" "$OFF"
       printf "       %b\n" "$stat"
+      # The evidence for a "contributed nothing" verdict: the commit desvio
+      # actually saw. Without it the line above is an assertion you have to take
+      # on faith, and the subject two lines up actively misleads.
+      if [ -n "${WHY[$i]}" ]; then
+        printf "       %s%s%s\n" "$DIM" "${WHY[$i]}" "$OFF"
+      fi
       # What the resolver was unsure about, and where to read the rest of it.
       # A clean merge tells you nothing; a resolver saying "I merged this and I
       # think it is broken" tells you a great deal, and it belongs here rather

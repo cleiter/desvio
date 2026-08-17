@@ -38,6 +38,48 @@ assert_eq 0 "$STATUS" "the build still succeeds"
 assert_contains "$OUT" "contributed NOTHING" "it says the branch added nothing"
 assert_contains "$OUT" "dead manifest lines: alpha" "and lists it as dead"
 assert_contains "$OUT" "drop this manifest line" "the summary says what to do"
+# The point of the verdict: which commit it saw. Naming it is what lets you
+# disagree with desvio, which is the whole reason this case is not one message.
+assert_contains "$OUT" "alpha: change file.txt" "it names the commit its work landed in"
+
+# ---------------------------------------------------------------------------
+# The bug this guards: a branch created from the base and never committed to
+# also merges into nothing, and desvio used to call that "already upstream" and
+# tell you to delete the line — losing whatever is still uncommitted in its
+# worktree. The subject it prints is the BASE's, which is exactly what makes the
+# old message convincing and wrong.
+it "a branch with no commits of its own is not called a dead manifest line"
+setup
+git -C "$REPO" branch never-touched main
+fixture_config
+manifest never-touched
+run_desvio build
+
+assert_eq 0 "$STATUS" "the build still succeeds"
+assert_contains "$OUT" "no commits of its own" "it says the branch is empty"
+assert_contains "$OUT" "branches with no commits at all: never-touched" \
+  "and lists it apart from the dead lines"
+assert_not_contains "$OUT" "dead manifest lines" "it is NOT a dead line"
+assert_not_contains "$OUT" "drop this manifest line" "and must not say to drop it"
+assert_contains "$OUT" "uncommitted" "it points at where the work probably is"
+
+# ---------------------------------------------------------------------------
+it "a branch an earlier manifest line already contains is named against that line"
+setup
+# beta sits on top of alpha, so merging beta first brings alpha in whole.
+git -C "$REPO" branch -f beta alpha
+git -C "$REPO" checkout -q beta
+printf 'on-top\n' > "$REPO/on-top.txt"
+git -C "$REPO" add on-top.txt
+git -C "$REPO" commit -q -m "beta on top of alpha"
+git -C "$REPO" checkout -q main
+fixture_config
+manifest beta alpha
+run_desvio build
+
+assert_eq 0 "$STATUS" "the build still succeeds"
+assert_contains "$OUT" "'beta' is merged above it" "it names the branch that has it"
+assert_contains "$OUT" "dead manifest lines: alpha" "and that line really is dead"
 
 # ---------------------------------------------------------------------------
 it "hooks run in order: preflight, install, seed, build, verify"

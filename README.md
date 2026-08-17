@@ -57,6 +57,7 @@ Every run does the same thing: fetch upstream, recreate the integration branch f
    ○ plan-visible-after-answer   # PR #3034
        feat(app): keep the plan card readable after answering
        already upstream — drop this manifest line
+       its own commits are in origin/main, up to 7c41a90e2 keep the plan card…
 
  head  a56070fc1   /Users/me/.myproject-build/build-tree
  gate passed: desvio_verify
@@ -87,7 +88,17 @@ new-thing-i-started-today   # no PR yet
 
 Size is not the criterion. A large old branch is cheaper at the front than a small new one, because it has already paid for its conflicts.
 
-When a branch contributes nothing, desvio marks the line — that is upstream having merged it. Delete the line.
+### When a branch contributes nothing
+
+Merging it produced no commit, and desvio marks the line `○`. There are three reasons for that, they want opposite responses, and desvio names the commit it is reasoning from so you can disagree with it:
+
+| what you see | what happened | what to do |
+|---|---|---|
+| `already upstream` | the branch's own commits are in the base already | delete the line |
+| `nothing was ever committed to this branch` | the branch was created and never moved | **keep the line** — look for uncommitted work in its worktree |
+| `a branch above it already has it` | an earlier manifest line contains this one | delete one of the two |
+
+The second is the one worth knowing about. A branch created from the base and never committed to merges into nothing exactly like a landed one, and the subject printed under it is the *base's* commit, not yours — so the line looks like a feature that shipped when in fact nothing was ever recorded. Tools that create a branch per workspace up front make this common. desvio tells the two apart by the branch's reflog: a branch that has only ever pointed at one commit never received one. Reflogs expire and a fresh clone has none, so treat it as the strong hint it is, and read the commit desvio names.
 
 ## Conflicts
 
