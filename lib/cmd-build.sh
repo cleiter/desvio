@@ -156,7 +156,7 @@ cmd_build() {
 
   for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
     b="${BRANCHES[$i]}"; oid="${OIDS[$i]}"
-    DESVIO_STEP="[$((i + 1))/${#BRANCHES[@]}] "
+    DESVIO_STEP="${DIM}[$((i + 1))/${#BRANCHES[@]}]${OFF} "
     before=$(gitw rev-parse HEAD)
     HOW+=("clean"); NFILES+=("0"); SUSPECT+=(""); WHY+=("")
     # Empty until the branch actually produces a commit. A branch that was
@@ -180,7 +180,7 @@ cmd_build() {
     local -a rr; rr=()
     if in_forget_list "$b"; then
       rr=(-c rerere.enabled=false)
-      step "$b — --forget: ignoring any recorded resolution"
+      step "${YEL}$b${OFF} — --forget: ignoring any recorded resolution"
     fi
 
     # --no-ff so a contribution always produces a merge commit. A fast-forward
@@ -194,7 +194,7 @@ cmd_build() {
         assert_no_markers "$b" || return 1
         gitw commit --no-edit -q
         HOW[$i]="rerere"
-        step "$b — conflict replayed from rerere"
+        step "${YEL}$b${OFF} — conflict replayed from rerere"
       elif [ -z "$(gitw ls-files -u)" ]; then
         die "merge of '$b' failed without conflicts — inspect $DESVIO_WORKTREE"
       elif [ "$DESVIO_AUTO_RESOLVE" = "1" ]; then
@@ -212,14 +212,14 @@ cmd_build() {
           # and the next build replays it without spending an agent.
           gitw commit --no-edit -q
           HOW[$i]="auto-resolved"
-          step "$b — conflict auto-resolved (recorded in rerere)"
+          step "${YEL}$b${OFF} — conflict auto-resolved (recorded in rerere)"
           # The resolver removed every marker and still thinks the result is
           # broken. Markers cannot check that, so carry it to the summary, where
           # it is read, instead of leaving it in a transcript, where it is not.
           if [ -n "${RESOLVER_SUSPECT:-}" ]; then
             SUSPECT[$i]="$RESOLVER_SUSPECT"
             HOW[$i]="auto-resolved-suspect"
-            step_warn "$b — the resolver was not sure: $RESOLVER_SUSPECT"
+            step_warn "${YEL}$b${OFF} — the resolver was not sure: $RESOLVER_SUSPECT"
             [ "${DESVIO_SUSPECT:-warn}" = "fail" ] &&
               die "'$b': the resolver flagged its own resolution and
   DESVIO_SUSPECT=fail. Nothing further was merged.
@@ -229,7 +229,7 @@ cmd_build() {
         else
           assert_refs_unchanged "$refs_before"
           if [ "$keep_going" = 1 ]; then
-            step_warn "$b — unresolved, abandoning this branch (--keep-going)"
+            step_warn "${YEL}$b${OFF} — unresolved, abandoning this branch (--keep-going)"
             gitw merge --abort || true
             FAILED+=("$b"); HOW[$i]="unresolved"
             continue
@@ -240,7 +240,7 @@ cmd_build() {
       elif [ "$keep_going" = 1 ]; then
         # --keep-going means what its help text says: report the branch and carry
         # on. It cannot mean that only when a resolver was the thing that failed.
-        step_warn "$b — conflict, abandoning this branch (--no-resolve --keep-going)"
+        step_warn "${YEL}$b${OFF} — conflict, abandoning this branch (--no-resolve --keep-going)"
         gitw merge --abort || true
         FAILED+=("$b"); HOW[$i]="unresolved"
         continue
@@ -266,7 +266,7 @@ cmd_build() {
       n=$(gitw diff --name-only "$before..$after" | wc -l | tr -d ' ')
       NFILES[$i]="$n"
       MERGES[$i]="$after"
-      step "$b → $(plural "$n" file)"
+      step "${YEL}$b${OFF} → $(plural "$n" file)"
     fi
   done
   # Back to untagged: everything below is about the manifest as a whole, and a
@@ -655,8 +655,8 @@ forget_recorded() {
   in_forget_list "$topic" || return 0
   [ "${#CONFLICTED[@]}" -gt 0 ] || return 0
   gitw rerere forget -- "${CONFLICTED[@]}" >/dev/null 2>&1 ||
-    step_warn "$topic — nothing recorded to forget"
-  step "$topic — forgot the recorded resolution, resolving from scratch"
+    step_warn "${YEL}$topic${OFF} — nothing recorded to forget"
+  step "${YEL}$topic${OFF} — forgot the recorded resolution, resolving from scratch"
 }
 
 # branch_oids <branch> — how many distinct commits this LOCAL branch has ever
@@ -717,7 +717,7 @@ dead_branch_why() {
     if [ "$(branch_oids "$b")" = 1 ]; then
       DEAD_HOW="no commits"
       DEAD_WHY="its tip is $DESVIO_BASE's own $tip"
-      step_warn "$b — contributed NOTHING: it has no commits of its own.
+      step_warn "${YEL}$b${OFF} — contributed NOTHING: it has no commits of its own.
   Its tip is a commit on $DESVIO_BASE:
     $tip
   Nothing was ever committed to this branch. Look for uncommitted work in its
@@ -726,7 +726,7 @@ dead_branch_why() {
     fi
     DEAD_HOW="already upstream"
     DEAD_WHY="its own commits are in $DESVIO_BASE, up to $tip"
-    step_warn "$b — contributed NOTHING: its commits are already in $DESVIO_BASE, up to
+    step_warn "${YEL}$b${OFF} — contributed NOTHING: its commits are already in $DESVIO_BASE, up to
     $tip
   Drop this manifest line."
     return 0
@@ -736,7 +736,7 @@ dead_branch_why() {
     if gitw merge-base --is-ancestor "$oid" "${OIDS[$j]}"; then
       DEAD_HOW="already merged"
       DEAD_WHY="${BRANCHES[$j]}, earlier in the manifest, already contains it"
-      step_warn "$b — contributed NOTHING: '${BRANCHES[$j]}' is merged above it and
+      step_warn "${YEL}$b${OFF} — contributed NOTHING: '${BRANCHES[$j]}' is merged above it and
   already contains its tip $tip. Drop one of the two lines."
       return 0
     fi
@@ -747,7 +747,7 @@ dead_branch_why() {
   # being an ancestor of that line. Rare, and not worth a guess.
   DEAD_HOW="already merged"
   DEAD_WHY="something merged above it already contains $tip"
-  step_warn "$b — contributed NOTHING: its tip $tip is already in the build,
+  step_warn "${YEL}$b${OFF} — contributed NOTHING: its tip $tip is already in the build,
   brought in by a branch above it. Drop this manifest line."
 }
 
