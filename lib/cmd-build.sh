@@ -124,7 +124,7 @@ cmd_build() {
     [ "$base_behind" = "0" ] && base_behind=""
   fi
 
-  log "building $DESVIO_BRANCH on $base_ref @ ${base:0:9}"
+  log "building ${B}$DESVIO_BRANCH${OFF} on $base_ref @ ${base:0:9}"
   printf '       %s  (%s)\n' "$base_subject" "$base_when"
   if [ -n "$base_behind" ]; then
     warn "pinned base — $DESVIO_BASE is $(plural "$base_behind" commit) ahead of it"
@@ -141,7 +141,7 @@ cmd_build() {
     # empty array expansion with `set -u` is an unbound-variable abort, which is
     # exactly the empty-manifest case above.
     for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
-      printf '       %-38s %s\n' "${BRANCHES[$i]}" "${OIDS[$i]:0:9}"
+      printf '  %s%2d%s   %-38s %s\n' "$DIM" "$((i + 1))" "$OFF" "${BRANCHES[$i]}" "${OIDS[$i]:0:9}"
     done
   fi
 
@@ -156,6 +156,7 @@ cmd_build() {
 
   for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
     b="${BRANCHES[$i]}"; oid="${OIDS[$i]}"
+    DESVIO_STEP="[$((i + 1))/${#BRANCHES[@]}] "
     before=$(gitw rev-parse HEAD)
     HOW+=("clean"); NFILES+=("0"); SUSPECT+=(""); WHY+=("")
     # Empty until the branch actually produces a commit. A branch that was
@@ -179,7 +180,7 @@ cmd_build() {
     local -a rr; rr=()
     if in_forget_list "$b"; then
       rr=(-c rerere.enabled=false)
-      log "  $b — --forget: ignoring any recorded resolution"
+      step "$b — --forget: ignoring any recorded resolution"
     fi
 
     # --no-ff so a contribution always produces a merge commit. A fast-forward
@@ -193,7 +194,7 @@ cmd_build() {
         assert_no_markers "$b" || return 1
         gitw commit --no-edit -q
         HOW[$i]="rerere"
-        log "  $b — conflict replayed from rerere"
+        step "$b — conflict replayed from rerere"
       elif [ -z "$(gitw ls-files -u)" ]; then
         die "merge of '$b' failed without conflicts — inspect $DESVIO_WORKTREE"
       elif [ "$DESVIO_AUTO_RESOLVE" = "1" ]; then
@@ -211,14 +212,14 @@ cmd_build() {
           # and the next build replays it without spending an agent.
           gitw commit --no-edit -q
           HOW[$i]="auto-resolved"
-          log "  $b — conflict auto-resolved (recorded in rerere)"
+          step "$b — conflict auto-resolved (recorded in rerere)"
           # The resolver removed every marker and still thinks the result is
           # broken. Markers cannot check that, so carry it to the summary, where
           # it is read, instead of leaving it in a transcript, where it is not.
           if [ -n "${RESOLVER_SUSPECT:-}" ]; then
             SUSPECT[$i]="$RESOLVER_SUSPECT"
             HOW[$i]="auto-resolved-suspect"
-            warn "  $b — the resolver was not sure: $RESOLVER_SUSPECT"
+            step_warn "$b — the resolver was not sure: $RESOLVER_SUSPECT"
             [ "${DESVIO_SUSPECT:-warn}" = "fail" ] &&
               die "'$b': the resolver flagged its own resolution and
   DESVIO_SUSPECT=fail. Nothing further was merged.
@@ -228,7 +229,7 @@ cmd_build() {
         else
           assert_refs_unchanged "$refs_before"
           if [ "$keep_going" = 1 ]; then
-            warn "  $b — unresolved, abandoning this branch (--keep-going)"
+            step_warn "$b — unresolved, abandoning this branch (--keep-going)"
             gitw merge --abort || true
             FAILED+=("$b"); HOW[$i]="unresolved"
             continue
@@ -239,7 +240,7 @@ cmd_build() {
       elif [ "$keep_going" = 1 ]; then
         # --keep-going means what its help text says: report the branch and carry
         # on. It cannot mean that only when a resolver was the thing that failed.
-        warn "  $b — conflict, abandoning this branch (--no-resolve --keep-going)"
+        step_warn "$b — conflict, abandoning this branch (--no-resolve --keep-going)"
         gitw merge --abort || true
         FAILED+=("$b"); HOW[$i]="unresolved"
         continue
@@ -265,9 +266,13 @@ cmd_build() {
       n=$(gitw diff --name-only "$before..$after" | wc -l | tr -d ' ')
       NFILES[$i]="$n"
       MERGES[$i]="$after"
-      log "  $b → $(plural "$n" file)"
+      step "$b → $(plural "$n" file)"
     fi
   done
+  # Back to untagged: everything below is about the manifest as a whole, and a
+  # line that inherited "[7/7] " from the last branch would be a lie.
+  # shellcheck disable=SC2034  # read by common.sh's step/step_warn, another file
+  DESVIO_STEP=""
 
   if [ "${#DEAD[@]}" -gt 0 ]; then
     warn "dead manifest lines: ${DEAD[*]}"
@@ -650,8 +655,8 @@ forget_recorded() {
   in_forget_list "$topic" || return 0
   [ "${#CONFLICTED[@]}" -gt 0 ] || return 0
   gitw rerere forget -- "${CONFLICTED[@]}" >/dev/null 2>&1 ||
-    warn "  $topic — nothing recorded to forget"
-  log "  $topic — forgot the recorded resolution, resolving from scratch"
+    step_warn "$topic — nothing recorded to forget"
+  step "$topic — forgot the recorded resolution, resolving from scratch"
 }
 
 # branch_oids <branch> — how many distinct commits this LOCAL branch has ever
@@ -712,7 +717,7 @@ dead_branch_why() {
     if [ "$(branch_oids "$b")" = 1 ]; then
       DEAD_HOW="no commits"
       DEAD_WHY="its tip is $DESVIO_BASE's own $tip"
-      warn "  $b — contributed NOTHING: it has no commits of its own.
+      step_warn "$b — contributed NOTHING: it has no commits of its own.
   Its tip is a commit on $DESVIO_BASE:
     $tip
   Nothing was ever committed to this branch. Look for uncommitted work in its
@@ -721,7 +726,7 @@ dead_branch_why() {
     fi
     DEAD_HOW="already upstream"
     DEAD_WHY="its own commits are in $DESVIO_BASE, up to $tip"
-    warn "  $b — contributed NOTHING: its commits are already in $DESVIO_BASE, up to
+    step_warn "$b — contributed NOTHING: its commits are already in $DESVIO_BASE, up to
     $tip
   Drop this manifest line."
     return 0
@@ -731,7 +736,7 @@ dead_branch_why() {
     if gitw merge-base --is-ancestor "$oid" "${OIDS[$j]}"; then
       DEAD_HOW="already merged"
       DEAD_WHY="${BRANCHES[$j]}, earlier in the manifest, already contains it"
-      warn "  $b — contributed NOTHING: '${BRANCHES[$j]}' is merged above it and
+      step_warn "$b — contributed NOTHING: '${BRANCHES[$j]}' is merged above it and
   already contains its tip $tip. Drop one of the two lines."
       return 0
     fi
@@ -742,7 +747,7 @@ dead_branch_why() {
   # being an ancestor of that line. Rare, and not worth a guess.
   DEAD_HOW="already merged"
   DEAD_WHY="something merged above it already contains $tip"
-  warn "  $b — contributed NOTHING: its tip $tip is already in the build,
+  step_warn "$b — contributed NOTHING: its tip $tip is already in the build,
   brought in by a branch above it. Drop this manifest line."
 }
 
@@ -939,8 +944,13 @@ build_summary() {
     done
   fi
 
-  printf "\n %shead%s  %s   %s%s%s\n" "$B" "$OFF" "${head_oid:0:9}" "$DIM" "$DESVIO_WORKTREE" "$OFF"
-  printf " %s%s%s\n" "$DIM" "$gated" "$OFF"
+  # The mirror of "starting from" above, in the same label column: the block
+  # that says what you got has to say what to check out to get at it. $DESVIO_NAME
+  # in the banner is a display name and is usually not the branch.
+  printf "\n %sbuilt as%s\n" "$B" "$OFF"
+  printf "   %-14s %s\n" "$DESVIO_BRANCH" "${head_oid:0:9}"
+  printf "   %-14s %s%s%s\n" "" "$DIM" "$DESVIO_WORKTREE" "$OFF"
+  printf "   %-14s %s%s%s\n" "" "$DIM" "$gated" "$OFF"
   rule
 
   if has_hook desvio_next_steps; then

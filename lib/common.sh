@@ -17,6 +17,15 @@ log()  { printf '\n%s[desvio]%s %s\n' "$BLU" "$OFF" "$*"; }
 warn() { printf '%s[desvio]%s %s\n' "$YEL" "$OFF" "$*"; }
 die()  { printf '\n%s[desvio] ERROR:%s %s\n' "$RED" "$OFF" "$*" >&2; exit 1; }
 
+# Which manifest line the build is on, as "[3/7] ". Set by the merge loop and
+# empty everywhere else, so a line printed outside the loop cannot be tagged with
+# a stale position. Everything the loop says about a branch goes through these
+# two — including the resolver's, which can arrive minutes after the line above
+# it and until now did not say which branch it was working on.
+DESVIO_STEP=""
+step()      { log  "  $DESVIO_STEP$*"; }
+step_warn() { warn "  $DESVIO_STEP$*"; }
+
 # plural <count> <noun> — "1 file", "3 files", "3 branches".
 #
 # The -es case is not pedantry: "branch" is the noun this tool says most often,

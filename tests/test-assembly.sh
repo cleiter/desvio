@@ -24,6 +24,16 @@ assert_eq 0 "$STATUS" "the build succeeds"
 assert_eq "2" "$(git -C "$BUILD/build-tree" log --oneline --merges | wc -l | tr -d ' ')" \
   "two branches, two merge commits"
 assert_contains "$OUT" "alpha → 1 file" "the file count is reported per branch"
+# Which branch is it on right now, and how much is left? The merge loop can sit
+# on one line for minutes while the resolver runs, so every line it prints about
+# a branch carries its position in the manifest.
+assert_contains "$OUT" "[1/2] alpha → 1 file" "the line says how far along the build is"
+assert_contains "$OUT" "[2/2] beta" "and counts to the end of the manifest"
+# The banner says $DESVIO_NAME ("test build"), which is not a branch you can
+# check out. The summary has to name the one you can.
+assert_contains "$OUT" "built as" "the summary says what was built"
+assert_contains "$(printf '%s\n' "$OUT" | grep -A1 'built as')" "integration" \
+  "and names the branch the assembly is on, not just the display name"
 
 # ---------------------------------------------------------------------------
 it "a branch already upstream is called out as a dead manifest line"

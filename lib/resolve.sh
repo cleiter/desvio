@@ -67,7 +67,7 @@ resolve_with_claude() {
     return 1
   }
 
-  log "resolving with $DESVIO_RESOLVER_MODEL at $DESVIO_RESOLVER_EFFORT effort (no shell, files only)"
+  step "$topic — resolving with $DESVIO_RESOLVER_MODEL at $DESVIO_RESOLVER_EFFORT effort (no shell, files only)"
   printf '       %s\n' "${paths[@]}"
 
   # Read/Edit/Write/Grep/Glob are enough to fix conflict markers, and all of them

@@ -59,8 +59,10 @@ Every run does the same thing: fetch upstream, recreate the integration branch f
        already upstream — drop this manifest line
        its own commits are in origin/main, up to 7c41a90e2 keep the plan card…
 
- head  a56070fc1   /Users/me/.myproject-build/build-tree
- gate passed: desvio_verify
+ built as
+   paseo-mine     a56070fc1
+                  /Users/me/.myproject-build/build-tree
+                  gate passed: desvio_verify
 ────────────────────────────────────────────────────────────────────
 ```
 
