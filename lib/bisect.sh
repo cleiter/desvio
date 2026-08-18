@@ -37,7 +37,7 @@ gate_failed_banner() {
   printf " %s%s%s\n" "$RED" "the gate failed — this build is not usable" "$OFF"
   rule
   printf "\n desvio_verify exited %s. The tree is exactly as it failed:\n" "$status"
-  printf "   %s\n" "$DESVIO_WORKTREE"
+  printf "   %s   %s%s%s\n" "$DESVIO_BRANCH" "$DIM" "$DESVIO_WORKTREE" "$OFF"
   bisect_suspect_hint
   printf "\n Nothing above says WHICH of your %s did it, and it is very often not\n" \
     "$(plural "$n" branch)"
@@ -81,11 +81,14 @@ bisect_quick_hint() {
 bisect_ask() {
   local n reply
   n=$(bisect_candidate_count)
-  printf "\n %sBisect now?%s Re-runs the gate over the merge chain — about %s more\n" \
-    "$B" "$OFF" "$((3 + $(bisect_log2 "$n")))"
+  printf "\n A bisect re-runs the gate over the merge chain — about %s more\n" \
+    "$((3 + $(bisect_log2 "$n")))"
   printf " gate runs, and your %s stay untouched either way.\n" "$(plural "$n" branch)"
   bisect_quick_hint
-  printf "\n %s[Y/n]%s " "$B" "$OFF"
+  # The question goes HERE, on the prompt line, and not above the cost and the
+  # quick-gate hint: those are four lines tall together, and a [Y/n] with the
+  # question that far up is a [Y/n] to nothing.
+  printf "\n %sBisect now?%s [Y/n] " "$B" "$OFF"
 
   # A failed read is EOF — a closed stdin, or Ctrl-D. Treat it as no rather than
   # as the default: nobody typed anything, so nobody agreed to anything.

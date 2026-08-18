@@ -177,10 +177,10 @@ That mark is a lead, not a verdict — the gate still decides. `DESVIO_SUSPECT=f
 **A bisect.** The integration branch is a straight chain of merge commits, one per manifest branch, in order. So the question is answerable by re-running the gate over that chain — and when the gate fails on a terminal, desvio offers to:
 
 ```
- Bisect now? Re-runs the gate over the merge chain — about 5 more
+ A bisect re-runs the gate over the merge chain — about 5 more
  gate runs, and your 3 branches stay untouched either way.
 
- [Y/n]
+ Bisect now? [Y/n]
 ```
 
 It binary-searches for the first merge where the gate breaks, then spends one more probe merging that branch onto the plain base alone — because "broken against upstream" and "broken against the branches above it" want opposite fixes, and it should not guess between them. It ends by naming the branch, its manifest line, and the command to rebase it.
