@@ -134,6 +134,29 @@ desvio does not run that `update-ref` itself, on purpose. It cannot tell a misbe
 
 Turn it off with `desvio build --no-resolve` and resolve by hand; rerere records your resolution the same way. Replace it by defining `desvio_resolve_conflict` in the config.
 
+### The conflicts rerere will not record
+
+Not every conflict has markers in it. When one side **deletes** a file the other side changed, git leaves the index with stages 1 and 2 (or 1 and 3) and the surviving side's file, whole and ordinary, in the tree. There is nothing to record a resolution against, and rerere says so: `git rerere remaining` lists the path, `git rerere status` does not, and `MERGE_RR` stays empty however many times you resolve it. That conflict comes back on every single build, at any base, for ever.
+
+Handing it to the marker resolver is the worst available outcome — it finds no markers, has no shell to delete anything with, and so ports the other side's change into a file that side removed on purpose, at full price, every build.
+
+So desvio classifies every unmerged path first, from one `git ls-files -u` read of stages **and** modes:
+
+| what the index shows | what desvio does |
+|---|---|
+| stages 1, 2, 3 (or 2, 3) — an ordinary content conflict | the marker resolver, recorded by rerere |
+| stages 1, 2 — the topic deleted it | ask one question, remember the answer |
+| stages 1, 3 — the integration side deleted it | the same question, the other way round |
+| a `160000` (submodule) entry, a path git also renamed, or a directory/file collision | nothing: desvio will not decide or cache it, and says so |
+
+The question is one bit — *after this merge, does anything still need this file?* — and it is asked on its own, read-only: `Read`, `Grep` and `Glob`, with `Bash`, `Edit` and `Write` denied, and the working tree fingerprinted before and after so an agent that edits anything while answering stops the build. desvio runs the `git rm` itself; the agent has no shell and never touches the index. The reply must end with `DELETE` or `KEEP` alone on its last line, or the build stops.
+
+The answer is then written to `state/decisions/`, keyed on the **path, the class and the two blob OIDs** — never on the topic's commit — so it survives a rebase or a base bump exactly as a rerere entry does, and replays with no agent call at all. `desvio build --forget <branch>` clears both caches for that branch, git's and desvio's.
+
+Deletions are decided and staged *before* the marker resolver runs, so that resolver only ever sees genuine marker conflicts.
+
+Define `desvio_resolve_deletion` in the config to answer the question yourself.
+
 ## What it writes to your checkout
 
 desvio does not clone. The build tree is a `git worktree` of `DESVIO_REPO`, so the tree's `.git` is a pointer file back into your checkout and everything below happens in your repo:
@@ -234,6 +257,7 @@ Hooks, all optional, called in this order:
 | `desvio_verify_quick` | the fast half of the gate, used only by a bisect. If it does not reproduce a failure, desvio refuses to bisect rather than guess |
 | `desvio_next_steps` | printed under the summary |
 | `desvio_resolve_conflict` | replace the built-in resolver. Takes `<topic> <subject>`, returns 0 when every marker is gone. May set `RESOLVER_SUSPECT` to one line when it cleared every marker but believes the result is still broken |
+| `desvio_resolve_deletion` | answer a delete/modify conflict, which has no markers. Takes `<topic> <subject> <path> <class>`, where class is `deleted-by-them` or `deleted-by-us`, and sets `DELETION_VERDICT` to `delete`, `keep`, or `handled` if it settled the index itself — desvio caches nothing it did not decide. Without this hook, a config that defines only `desvio_resolve_conflict` is given the merge and believed by the state of the index rather than by its return code |
 
 Inside a hook you have `log`, `warn`, `die`, `in_tree <cmd...>`, `gitw`/`gitr`, and `stamp_changed`/`stamp_write` for skipping work when nothing moved:
 
@@ -302,6 +326,7 @@ CI runs the suite on Linux and macOS, and on macOS a second time with `/bin/bash
 ## Known sharp edges
 
 - **A stale rerere resolution can be wrong.** rerere matches on conflict text, so a resolution recorded from one merge can replay into a different one. desvio refuses to commit a file that still holds conflict markers, but a resolution that dropped a side leaves no markers to find. The gate is what catches it — and once a bad resolution is recorded, every later build replays it silently and reports a green *conflict replayed from rerere*. To be rid of one: `desvio build --forget <branch>`, which merges that branch with rerere off so the conflict comes back, forgets the recorded answer, and records the replacement. One build fixes it permanently. A **rebased** branch needs none of this: rerere keys on the text of the conflict, so a rebase produces a different conflict and the stale entry simply stops matching.
+- **A stale deletion decision can be wrong, and nothing textual catches it.** A file judged dead stays judged dead: if a later branch adds the first reference to it, the recorded `delete` replays and takes the file out from under that reference. There are no markers for this and no check that fires — the gate is what catches it, and the gate is not universal. `desvio build --assemble-only` never runs it, and a config with no `desvio_verify` hook only warns. In those two modes a stale deletion exits 0 silently. `desvio build --forget <branch>` re-asks.
 - **A clean merge is not a correct merge.** See above.
 - **Bisecting shares one `node_modules`.** Probes clean with the same `DESVIO_CLEAN_KEEP` as a build, so an install hook without a `stamp_changed` guard reinstalls at every probe. And a failure caused by something `KEEP` preserves follows the search all the way down to the base, where desvio reports it as upstream's — which is why that verdict raises the possibility itself.
 - **A bisect finds *a* break, not every break.** Binary search returns a pass→fail pair it actually observed, so the branch it names is genuinely broken there. If two branches are independently broken you will find the second one on the next run.

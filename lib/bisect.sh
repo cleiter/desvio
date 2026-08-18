@@ -304,6 +304,11 @@ bisect_solo() {
   # recording a resolution from it would put a preimage in the cache that
   # nothing will ever match, and REPLAYING one into it could make a healthy
   # branch look broken alone — the exact wrong answer to the exact question.
+  #
+  # The same reasoning covers desvio's own decision cache, and it needs no code:
+  # a conflicted probe aborts below without ever entering the resolver, so
+  # nothing here consults or records a delete/modify decision. Anything added
+  # to this function that DOES resolve has to keep both caches out of it.
   if ! gitw -c rerere.enabled=false merge --no-ff --no-edit \
          -m "desvio solo probe: $name" "$topic_oid" >/dev/null 2>&1; then
     gitw merge --abort >/dev/null 2>&1 || true

@@ -187,6 +187,32 @@ topic_branch() {
   git -C "$REPO" checkout -q main
 }
 
+# topic_branch_delete <name> <file> [from] — a local branch that DELETES a file.
+#
+# The fixture for the one conflict git cannot record. Merge this into a branch
+# that modified the same file and the index gets stages 1 and 2 with no 3, no
+# conflict markers anywhere, and nothing in rerere's cache however many times
+# you resolve it.
+topic_branch_delete() {
+  local name="$1" file="$2" from="${3:-origin/main}"
+  git -C "$REPO" checkout -q -B "$name" "$from"
+  git -C "$REPO" rm -q "$file"
+  git -C "$REPO" commit -qm "$name: delete $file"
+  git -C "$REPO" checkout -q main
+}
+
+# topic_branch_rename <name> <from-file> <to-file> [from] — a branch that MOVES a
+# file. Merged against a branch that modified it, git presents the old path with
+# a stage missing, exactly like a plain deletion — which is why the classifier
+# has to ask about renames rather than trust the stage count.
+topic_branch_rename() {
+  local name="$1" file="$2" dest="$3" from="${4:-origin/main}"
+  git -C "$REPO" checkout -q -B "$name" "$from"
+  git -C "$REPO" mv "$file" "$dest"
+  git -C "$REPO" commit -qm "$name: move $file to $dest"
+  git -C "$REPO" checkout -q main
+}
+
 # ---------- other people's repositories ----------
 #
 # A manifest line can name a branch on a remote that is not $DESVIO_REMOTE. The

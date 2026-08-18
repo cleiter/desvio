@@ -107,4 +107,44 @@ it "--forget without a branch name is refused"
 setup
 assert_dies_with "--forget needs a branch name" build --forget
 
+
+# ---------------------------------------------------------------------------
+# The regression this file exists to prevent, one layer up. A delete/modify
+# conflict is never in rerere's cache — `git rerere forget` on it has nothing to
+# do — so --forget on such a branch would drop nothing at all and the next build
+# would replay desvio's own recorded decision as if it had been agreed afresh.
+it "--forget re-decides a delete/modify conflict too"
+fixture_new
+topic_branch editor file.txt "editor-line"
+topic_branch_delete remover file.txt
+# Countable, and its answer is whatever the fixture last wrote down — so the
+# second decision can differ from the first and be seen to have been applied.
+fixture_config "DESVIO_AUTO_RESOLVE=1" '
+desvio_resolve_deletion() {
+  local n
+  n=$(( $(cat "$DESVIO_STATE/calls" 2>/dev/null || echo 0) + 1 ))
+  printf "%s" "$n" > "$DESVIO_STATE/calls"
+  DELETION_VERDICT=$(cat "$DESVIO_STATE/verdict" 2>/dev/null || echo delete)
+}'
+manifest editor remover
+mkdir -p "$BUILD/state"
+printf 'delete' > "$BUILD/state/verdict"
+
+run_desvio build
+assert_eq 0 "$STATUS" "the first build succeeds"
+assert_eq "1" "$(calls)" "the deletion was decided once"
+
+run_desvio build
+assert_eq 0 "$STATUS" "the second build succeeds"
+assert_contains "$OUT" "replayed from the decision cache" "the second build replays it"
+assert_eq "1" "$(calls)" "without asking again"
+
+printf 'keep' > "$BUILD/state/verdict"
+run_desvio build --forget remover
+assert_eq 0 "$STATUS" "the --forget build succeeds"
+assert_eq "2" "$(calls)" "--forget asked again"
+assert_contains "$OUT" "1 file kept" "and the new answer is what landed"
+if tree_has file.txt editor-line; then ok "the file is back in the tree"
+else fail "the file is back in the tree" "file.txt: $(cat "$WORKTREE/file.txt" 2>&1)"; fi
+
 finish

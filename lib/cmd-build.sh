@@ -148,17 +148,56 @@ cmd_build() {
   gitw checkout -q -B "$DESVIO_BRANCH" "$base"
 
   # ---------- merge ----------
+  #
+  # What one branch's merge can end in:
+  #
+  #   gitw merge --no-ff <topic>
+  #        |
+  #        +-- exit 0 ......................... clean
+  #        |
+  #        \-- exit non-zero
+  #              |
+  #              +-- no unmerged entries ...... rerere replayed a resolution
+  #              |
+  #              \-- unmerged entries remain
+  #                       |
+  #                    classify_conflicts   (one `ls-files -u` read: stages AND modes)
+  #                       |
+  #        +--------------+---------------+-----------------+
+  #     content       deleted-by-them  deleted-by-us      other
+  #    (markers)      (stages 1,2)     (stages 1,3)   (submodule, rename,
+  #        |                \             /            dir/file collision)
+  #        |                 \           /                  |
+  #        |               decision cache: hit -> replay          |
+  #        |                              miss -> ask, then       |
+  #        |                                      apply and stage |
+  #        |                                      AFTER the commit|
+  #        |                          |                           |
+  #        \--------------------------+---------------------------/
+  #                                   |
+  #                         resolve_conflict (markers only, by now)
+  #                                   |
+  #                    no markers, no unmerged entries, commit
+  #
   # Parallel indexed arrays, not an associative one: /bin/bash on macOS is 3.2
   # and has no `declare -A`.
-  local -a HOW NFILES SUBJECTS MERGES SUSPECT WHY DEAD EMPTY FAILED
-  HOW=(); NFILES=(); SUBJECTS=(); MERGES=(); SUSPECT=(); WHY=(); DEAD=(); EMPTY=(); FAILED=()
+  local -a HOW NFILES SUBJECTS MERGES SUSPECT WHY DEAD EMPTY FAILED DECNOTE
+  HOW=(); NFILES=(); SUBJECTS=(); MERGES=(); SUSPECT=(); WHY=(); DEAD=(); EMPTY=(); FAILED=(); DECNOTE=()
+  # The classifier's output and the not-yet-recorded decisions. Declared here
+  # rather than where they are filled because bash 3.2 with `set -u` aborts on
+  # `${#arr[@]}` for an array that was never assigned, and the commonest build
+  # is the one where no conflict ever happens.
+  local -a CLASS BASE_BLOB SURV_BLOB PENDING_KEYS PENDING_ACTS PENDING_PATHS
+  local -a SETTLED_PATHS
+  CLASS=(); BASE_BLOB=(); SURV_BLOB=()
+  PENDING_KEYS=(); PENDING_ACTS=(); PENDING_PATHS=(); SETTLED_PATHS=()
   local b before after n refs_before
 
   for ((i = 0; i < ${#BRANCHES[@]}; i++)); do
     b="${BRANCHES[$i]}"; oid="${OIDS[$i]}"
     DESVIO_STEP="${DIM}[$((i + 1))/${#BRANCHES[@]}]${OFF} "
     before=$(gitw rev-parse HEAD)
-    HOW+=("clean"); NFILES+=("0"); SUSPECT+=(""); WHY+=("")
+    HOW+=("clean"); NFILES+=("0"); SUSPECT+=(""); WHY+=(""); DECNOTE+=("")
     # Empty until the branch actually produces a commit. A branch that was
     # already upstream produced none, and one that --keep-going abandoned was
     # never merged; there is nothing to check out for either, so neither can be
@@ -200,19 +239,27 @@ cmd_build() {
       elif [ "$DESVIO_AUTO_RESOLVE" = "1" ]; then
         refs_before=$(snapshot_refs)
         snapshot_conflicted
+        classify_conflicts
         forget_recorded "$b"
-        if resolve_conflict "$b" "${SUBJECTS[$i]}"; then
+        if settle_conflicts "$b" "${SUBJECTS[$i]}"; then
           assert_refs_unchanged "$refs_before"
           assert_resolver_scope "$b"
-          gitw add -- "${CONFLICTED[@]}"
+          stage_settled "$b"
           [ -z "$(gitw ls-files -u)" ] ||
             die "'$b': the resolver left unmerged entries. Tree is at $DESVIO_WORKTREE."
           assert_no_markers "$b"
           # rerere.autoupdate is on, so committing here records the resolution
           # and the next build replays it without spending an agent.
           gitw commit --no-edit -q
-          HOW[$i]="auto-resolved"
-          step "${YEL}$b${OFF} — conflict auto-resolved (recorded in rerere)"
+          # AFTER the commit, and never before. rerere writes its postimage at
+          # exactly this point for exactly this reason: a decision recorded any
+          # earlier outlives a merge that --keep-going goes on to abandon, and
+          # the next build then replays an answer to a question that was never
+          # accepted by anything.
+          record_decisions "$b"
+          HOW[$i]="$SETTLE_HOW"
+          DECNOTE[$i]="$SETTLE_NOTE"
+          step "${YEL}$b${OFF} — $SETTLE_SAID"
           # The resolver removed every marker and still thinks the result is
           # broken. Markers cannot check that, so carry it to the summary, where
           # it is read, instead of leaving it in a transcript, where it is not.
@@ -250,6 +297,7 @@ cmd_build() {
         # the replacement. Dying first would leave the stale entry in the cache
         # and your hand resolution would be overwritten by it on the next build.
         snapshot_conflicted
+        classify_conflicts
         forget_recorded "$b"
         conflict_death "$b" "auto-resolution is off (--no-resolve)."
       fi
@@ -651,11 +699,30 @@ in_forget_list() {
 # after this call is recorded normally, replacing what was forgotten, and one
 # build fixes the cache permanently.
 forget_recorded() {
-  local topic="$1"
+  local topic="$1" i key
   in_forget_list "$topic" || return 0
   [ "${#CONFLICTED[@]}" -gt 0 ] || return 0
-  gitw rerere forget -- "${CONFLICTED[@]}" >/dev/null 2>&1 ||
-    step_warn "${YEL}$topic${OFF} — nothing recorded to forget"
+
+  # Two caches now, and forgetting only one is worse than forgetting neither:
+  # git's entry would go, desvio's would survive, and the next build would
+  # replay the very decision you asked to be rid of — with no agent call in the
+  # output to show that anything was reused.
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    case "${CLASS[$i]}" in content|other) continue ;; esac
+    key=$(decision_key "${CONFLICTED[$i]}" "${CLASS[$i]}" "${BASE_BLOB[$i]}" "${SURV_BLOB[$i]}")
+    decision_forget "$key"
+  done
+
+  # One call per path rather than one call for all of them. `git rerere forget`
+  # fails on a path it never recorded — which is every stage-incomplete path, by
+  # construction — and a single call spanning both classes reports failure for
+  # the whole set, printing "nothing recorded to forget" over a content conflict
+  # that was in fact just forgotten.
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    [ "${CLASS[$i]}" = "content" ] || continue
+    gitw rerere forget -- "${CONFLICTED[$i]}" >/dev/null 2>&1 ||
+      step_warn "${YEL}$topic${OFF} — nothing recorded to forget for ${CONFLICTED[$i]}"
+  done
   step "${YEL}$topic${OFF} — forgot the recorded resolution, resolving from scratch"
 }
 
@@ -827,6 +894,312 @@ snapshot_conflicted() {
   done < <(gitw diff --name-only --diff-filter=U -z)
 }
 
+# ---------- conflict classification ----------
+#
+# Not every conflict is text with markers in it, and the ones that are not are
+# exactly the ones git cannot remember. `git rerere` records a conflict only
+# when it can express it as a preimage with markers, which needs all three index
+# stages present. Drop a stage — one side deleted the file — and git records
+# nothing: MERGE_RR stays empty, the path appears in `git rerere remaining`, and
+# every future build re-asks the same question. That is not a slow path, it is
+# an uncacheable one, and it has to be recognised before anything is handed to a
+# resolver that was written for markers.
+#
+#   ls-files -u  ─┬─ any stage mode 160000 ──────────────► other   (submodule)
+#                 ├─ path is a rename source ────────────► other
+#                 ├─ path nests inside another conflict ─► other   (dir/file)
+#                 ├─ stages 2 AND 3 ─────────────────────► content (markers)
+#                 ├─ stage 2, no 3 ──────────────────────► deleted-by-them
+#                 └─ stage 3, no 2 ──────────────────────► deleted-by-us
+#
+# `other` is never cached and never decided here: an agent that edits files
+# cannot fix an index gitlink, and a rename/delete or a dir/file collision spans
+# several paths at once, so deciding each path on its own can produce a result
+# that is individually reasonable and jointly incoherent. Those keep going to
+# the resolver, which is where they went before this function existed.
+#
+# Stage presence ALONE is not enough to tell these apart. A gitlink conflict can
+# present stages 1,2,3 or 1,2 or 1,3 like any other path, so the mode has to be
+# read too — which is why this parses `ls-files -u` rather than reusing the
+# --diff-filter=U path list that snapshot_conflicted already has.
+#
+# One parse for the whole merge, not one git call per path.
+classify_conflicts() {
+  local rec meta path mode sha stage i j idx
+  local -a stages gitlink ours theirs
+  stages=(); gitlink=(); ours=(); theirs=()
+  CLASS=(); BASE_BLOB=(); SURV_BLOB=()
+
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    stages+=(""); gitlink+=("0"); ours+=(""); theirs+=("")
+    CLASS+=("content"); BASE_BLOB+=(""); SURV_BLOB+=("")
+  done
+  [ "${#CONFLICTED[@]}" -gt 0 ] || return 0
+
+  # `<mode> SP <oid> SP <stage> TAB <path>`, NUL-terminated so a path with a
+  # newline in it stays one record.
+  while IFS= read -r -d '' rec; do
+    meta="${rec%%$'\t'*}"; path="${rec#*$'\t'}"
+    read -r mode sha stage <<< "$meta"
+    idx=-1
+    for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+      if [ "${CONFLICTED[$i]}" = "$path" ]; then idx=$i; break; fi
+    done
+    [ "$idx" -ge 0 ] || continue
+    stages[$idx]="${stages[$idx]}$stage"
+    [ "$mode" = "160000" ] && gitlink[$idx]=1
+    case "$stage" in
+      1) BASE_BLOB[$idx]="$sha" ;;
+      2) ours[$idx]="$sha" ;;
+      3) theirs[$idx]="$sha" ;;
+    esac
+  done < <(gitw ls-files -u -z)
+
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    if [ "${gitlink[$i]}" = "1" ]; then CLASS[$i]="other"; continue; fi
+    case "${stages[$i]}" in
+      *2*3*|*3*2*) CLASS[$i]="content" ;;
+      *2*)         CLASS[$i]="deleted-by-them"; SURV_BLOB[$i]="${ours[$i]}" ;;
+      *3*)         CLASS[$i]="deleted-by-us";   SURV_BLOB[$i]="${theirs[$i]}" ;;
+      *)           CLASS[$i]="other" ;;
+    esac
+  done
+
+  # A directory/file collision reaches us as two ordinary-looking paths, one
+  # nested in the other. Decide either alone and you can end up keeping a file
+  # and the directory that replaced it.
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    for ((j = 0; j < ${#CONFLICTED[@]}; j++)); do
+      [ "$i" = "$j" ] && continue
+      case "${CONFLICTED[$j]}" in
+        "${CONFLICTED[$i]}"/*) CLASS[$i]="other"; CLASS[$j]="other" ;;
+      esac
+    done
+  done
+
+  demote_renames
+}
+
+# A missing stage means "deleted" only if nothing on that side took the content
+# over. When a side RENAMED the file, git can still present the old path with a
+# stage missing, and answering "is this file still needed?" about the old path
+# is answering the wrong question — the content lives on under a new name.
+#
+# Asked of each side separately, and only when there is a deletion class to
+# demote, so an ordinary content-only conflict pays nothing for this.
+demote_renames() {
+  local i mb them us
+  local -a renamed
+  local any=0
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    case "${CLASS[$i]}" in deleted-by-them|deleted-by-us) any=1; break ;; esac
+  done
+  [ "$any" = 1 ] || return 0
+
+  mb=$(gitw merge-base HEAD MERGE_HEAD 2>/dev/null) || return 0
+  [ -n "$mb" ] || return 0
+  them=$(rename_sources "$mb" MERGE_HEAD)
+  us=$(rename_sources "$mb" HEAD)
+
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    # The trailing newline is put back here: command substitution ate the one
+    # rename_sources printed, and without it the last name in the list can only
+    # be matched by a pattern that would also match a longer path ending the
+    # same way — which is the whole reason for wrapping the names in newlines.
+    case "${CLASS[$i]}" in
+      deleted-by-them) renamed="$them"$'\n' ;;
+      deleted-by-us)   renamed="$us"$'\n' ;;
+      *) continue ;;
+    esac
+    case "$renamed" in
+      *$'\n'"${CONFLICTED[$i]}"$'\n'*) CLASS[$i]="other" ;;
+    esac
+  done
+}
+
+# rename_sources <from> <to> — the old names of everything renamed or copied
+# between two trees, newline-wrapped at both ends so a caller can test for a
+# whole line without matching a path that merely ends the same way.
+#
+# A path containing a newline defeats this test and is simply not matched, which
+# fails toward "treat it as an ordinary deletion and ask" — the safe direction,
+# and the one that costs an agent call rather than a wrong answer.
+rename_sources() {
+  local st old new out=$'\n'
+  while IFS= read -r -d '' st; do
+    case "$st" in
+      R*|C*) IFS= read -r -d '' old; IFS= read -r -d '' new; out="$out$old"$'\n' ;;
+      *)     IFS= read -r -d '' old ;;
+    esac
+  done < <(gitw diff --name-status -M -C -z "$1" "$2" 2>/dev/null)
+  printf '%s' "$out"
+}
+
+# ---------- settling a conflicted merge ----------
+#
+# Order is the whole point of this function. Every stage-incomplete path is
+# decided and STAGED first, and only then does the marker resolver run — because
+# resolve_with_claude discovers its own path set from --diff-filter=U rather
+# than being handed one. Run it first and it is given a file with no markers in
+# it and told to remove the markers, which is how a four-and-a-half-minute
+# agent call gets spent hand-porting a change into a file the topic deleted.
+#
+# Returns non-zero to leave the tree for a human, exactly like resolve_conflict.
+# Sets SETTLE_HOW / SETTLE_NOTE / SETTLE_SAID for the summary.
+settle_conflicts() {
+  local topic="$1" subject="$2"
+  local i cls key act path
+  local hits=0 asks=0 deleted=0 kept=0 content=0
+
+  # A resolver that is never called cannot clear this, and the previous
+  # branch's doubt must not be reported against this one.
+  RESOLVER_SUSPECT=""
+  PENDING_KEYS=(); PENDING_ACTS=(); PENDING_PATHS=(); SETTLED_PATHS=()
+
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    path="${CONFLICTED[$i]}"; cls="${CLASS[$i]}"
+    case "$cls" in
+      content) content=1; continue ;;
+      other)
+        content=1
+        step_warn "${YEL}$topic${OFF} — $path: a conflict desvio will not decide or cache (submodule, rename or directory clash)"
+        continue ;;
+    esac
+
+    key=$(decision_key "$path" "$cls" "${BASE_BLOB[$i]}" "${SURV_BLOB[$i]}")
+    if act=$(decision_lookup "$key"); then
+      case "$act" in
+        delete|keep) ;;
+        *) die "'$topic': the decision recorded for
+    $path
+  says '$act', which is neither 'delete' nor 'keep'. Nothing has been staged.
+  Remove $(decision_dir)/$key and build again to decide it afresh." ;;
+      esac
+      hits=$((hits + 1))
+      step "${YEL}$topic${OFF} — $path: $act replayed from the decision cache"
+    else
+      resolve_deletion "$topic" "$subject" "$path" "$cls" || return 1
+      act="$DELETION_VERDICT"
+      asks=$((asks + 1))
+      # A custom resolver that settled the index itself owns that outcome. It
+      # was not desvio's decision, so desvio does not apply it again and does
+      # not put it in a cache whose entries only desvio knows how to invalidate.
+      if [ "$act" = "handled" ]; then
+        SETTLED_PATHS+=("$path")
+        step "${YEL}$topic${OFF} — $path: settled by the resolver hook"
+        continue
+      fi
+      PENDING_KEYS+=("$key"); PENDING_ACTS+=("$act"); PENDING_PATHS+=("$path")
+    fi
+
+    apply_decision "$topic" "$path" "$act" || return 1
+    SETTLED_PATHS+=("$path")
+    case "$act" in
+      delete) deleted=$((deleted + 1)) ;;
+      keep)   kept=$((kept + 1)) ;;
+    esac
+  done
+
+  if [ "$content" = 1 ]; then
+    resolve_conflict "$topic" "$subject" || return 1
+  fi
+
+  settle_verdict "$content" "$hits" "$asks" "$deleted" "$kept"
+}
+
+# The three strings the summary and the step line are built from. Split out
+# because deciding what happened is a different job from doing it, and the
+# combinations — cached or asked, deleted or kept, with or without a marker
+# resolution beside them — are the part that is easy to get quietly wrong.
+settle_verdict() {
+  local content="$1" hits="$2" asks="$3" deleted="$4" kept="$5"
+  local parts=""
+
+  if [ "$((deleted + kept))" -gt 0 ]; then
+    [ "$deleted" -gt 0 ] && parts="$(plural "$deleted" file) deleted"
+    if [ "$kept" -gt 0 ]; then
+      [ -n "$parts" ] && parts="$parts, "
+      parts="$parts$(plural "$kept" file) kept"
+    fi
+    if [ "$hits" -gt 0 ] && [ "$asks" -gt 0 ]; then
+      parts="$parts · $hits replayed, $asks decided"
+    elif [ "$hits" -gt 0 ]; then
+      parts="$parts · replayed from the decision cache"
+    else
+      parts="$parts · decided and recorded"
+    fi
+  fi
+  SETTLE_NOTE="$parts"
+
+  if [ "$content" = 1 ]; then
+    SETTLE_HOW="auto-resolved"
+    SETTLE_SAID="conflict auto-resolved (recorded in rerere)"
+    [ -n "$parts" ] && SETTLE_SAID="$SETTLE_SAID · $parts"
+  elif [ "$asks" -gt 0 ]; then
+    SETTLE_HOW="decided"
+    SETTLE_SAID="delete/modify decided — $parts"
+  else
+    SETTLE_HOW="decided-cached"
+    SETTLE_SAID="delete/modify replayed from the decision cache — $parts"
+  fi
+
+  # The branches above end in a `&&` test, whose status would otherwise become
+  # this function's — and settle_conflicts reads that as "the resolver failed".
+  return 0
+}
+
+# desvio runs the git command, never the agent. The agent answers one question
+# and has no shell to act on its own answer with.
+apply_decision() {
+  local topic="$1" path="$2" act="$3"
+  case "$act" in
+    delete)
+      gitw rm -f -q -- "$path" ||
+        { warn "'$topic': could not remove $path"; return 1; } ;;
+    keep)
+      gitw add -- "$path" ||
+        { warn "'$topic': could not stage $path"; return 1; } ;;
+    *) die "'$topic': internal error — decision '$act' for $path" ;;
+  esac
+}
+
+# Stage what the resolver touched, which is every conflicted path EXCEPT the
+# ones settled above: `git rm` already staged those, and a pathspec that matches
+# nothing — which is what a removed path is — makes `git add` exit non-zero.
+#
+# Existence in the worktree is NOT the test. A resolver may legitimately settle a
+# content conflict by deleting the file (tests/test-markers.sh:63), and `git add`
+# on a path that is gone but still in the index is how that removal gets staged.
+stage_settled() {
+  local topic="$1" i j settled
+  local -a add; add=()
+  for ((i = 0; i < ${#CONFLICTED[@]}; i++)); do
+    settled=0
+    for ((j = 0; j < ${#SETTLED_PATHS[@]}; j++)); do
+      if [ "${SETTLED_PATHS[$j]}" = "${CONFLICTED[$i]}" ]; then settled=1; break; fi
+    done
+    [ "$settled" = 1 ] || add+=("${CONFLICTED[$i]}")
+  done
+  [ "${#add[@]}" -gt 0 ] || return 0
+  gitw add -- "${add[@]}"
+}
+
+# record_decisions <topic> — write the answers this merge had to ask for.
+#
+# Called only after the merge commits. A failed write is not fatal: the cost is
+# one agent call on the next build, which is exactly the cost of not having a
+# cache at all, and stopping a finished build over it would be worse than the
+# thing it is protecting against.
+record_decisions() {
+  local topic="$1" i
+  [ "${#PENDING_KEYS[@]}" -gt 0 ] || return 0
+  for ((i = 0; i < ${#PENDING_KEYS[@]}; i++)); do
+    decision_record "${PENDING_KEYS[$i]}" "${PENDING_ACTS[$i]}" "${PENDING_PATHS[$i]}" "$topic" ||
+      step_warn "${YEL}$topic${OFF} — could not record the decision for ${PENDING_PATHS[$i]}; the next build will ask again"
+  done
+  PENDING_KEYS=(); PENDING_ACTS=(); PENDING_PATHS=()
+}
+
 assert_resolver_scope() {
   local topic="$1" p c known
   local -a stray; stray=()
@@ -909,6 +1282,10 @@ build_summary() {
         "auto-resolved-suspect")
                             mark="${YEL}!${OFF}"; stat="${YEL}$(plural "${NFILES[$i]}" file) · auto-resolved, and the resolver was NOT sure${OFF}" ;;
         "rerere")           mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · conflict replayed from rerere${OFF}" ;;
+        # Two outcomes rerere can never produce, kept visibly apart from it:
+        # these are the conflicts git refuses to record, decided by desvio.
+        "decided")          mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · delete/modify decided${OFF}" ;;
+        "decided-cached")   mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · delete/modify replayed from the decision cache${OFF}" ;;
         *)                  mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file)${OFF}" ;;
       esac
       if [ -n "${NOTES[$i]}" ]; then
@@ -921,6 +1298,12 @@ build_summary() {
       fi
       printf "       %s%s%s\n" "$DIM" "${SUBJECTS[$i]}" "$OFF"
       printf "       %b\n" "$stat"
+      # Which files, and whether an agent was spent on them. One `HOW` value per
+      # branch cannot say that when a single merge deleted one file, kept
+      # another and replayed a third from the cache.
+      if [ -n "${DECNOTE[$i]}" ]; then
+        printf "       %s%s%s\n" "$DIM" "${DECNOTE[$i]}" "$OFF"
+      fi
       # The evidence for a "contributed nothing" verdict: the commit desvio
       # actually saw. Without it the line above is an assertion you have to take
       # on faith, and the subject two lines up actively misleads.

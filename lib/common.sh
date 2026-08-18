@@ -323,12 +323,80 @@ stamp_write() {
 # is, and a slash in a filename is a directory that does not exist, so `tee`
 # fails and the transcript is lost — on the error path, where it is the only
 # record of what the resolver was thinking when it gave up.
-resolver_log() { printf '%s/resolve-%s.log' "$DESVIO_STATE" "${1//\//-}"; }
+# A second argument narrows the name to ONE path inside that branch's merge.
+# A single merge can produce several deletion verdicts, and one transcript per
+# topic would leave the last of them overwriting every explanation before it —
+# including the one saying why a file you care about is no longer there.
+resolver_log() {
+  local topic="${1//\//-}"
+  if [ "$#" -lt 2 ]; then
+    printf '%s/resolve-%s.log' "$DESVIO_STATE" "$topic"
+  else
+    printf '%s/resolve-%s--%s.log' "$DESVIO_STATE" "$topic" "${2//\//-}"
+  fi
+}
 
 # bisect_log <k> <oid> — where one gate probe's output lives. A helper for the
 # same reason resolver_log is one: three places print this path, and if they
 # disagree the message tells you to open a file that is not there.
 bisect_log() { printf '%s/bisect-%s-%s.log' "$DESVIO_STATE" "$1" "${2:0:9}"; }
+
+# ---------- the decision store ----------
+#
+# rerere for the conflicts rerere refuses. `git rerere` only records a conflict
+# it can express as text with markers, which means all three index stages have
+# to exist. A delete/modify has two, so git records NOTHING for it: MERGE_RR
+# stays empty, the path turns up in `git rerere remaining`, and every later
+# build re-asks a question that was already answered. Measured on a real tree:
+# one such path cost four and a half minutes of agent time per build, forever.
+#
+# So desvio keeps its own tiny cache for exactly that class. Same contract as
+# rerere's, deliberately: content decides the key, the answer is replayed
+# without asking again, and `--forget` throws it away.
+#
+# The key carries the PATH as well as the blobs. rerere can key on content
+# alone because it replays content; this replays a JUDGEMENT — "is this file
+# still needed?" — and that judgement is about a path. Two files with identical
+# bytes are not the same question: one can be a router entry point that nothing
+# imports by design and the other a dead copy.
+#
+# The topic's OID is deliberately NOT in the key. These branches get commits
+# constantly; keying on the tip would miss on nearly every build and buy
+# nothing, which is the whole reason the cache exists.
+decision_dir() { printf '%s/decisions' "$DESVIO_STATE"; }
+
+# decision_key <path> <class> <base-blob> <survivor-blob>
+#
+# git hash-object rather than shasum/sha1sum/openssl: it is the one hashing tool
+# guaranteed to be present, since desvio cannot run at all without git. NUL
+# between the fields so a path containing the separator cannot forge a key that
+# belongs to another path.
+decision_key() {
+  printf '%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" | git hash-object --stdin
+}
+
+# decision_lookup <key> — prints `delete` or `keep`, or nothing on a miss.
+#
+# An entry that exists but says something else is corruption, not a miss, and
+# the caller stops the build over it: a decision store that silently ignores
+# what it cannot read is a decision store you cannot trust to have been read.
+decision_lookup() {
+  local f; f="$(decision_dir)/$1"
+  [ -f "$f" ] || return 1
+  head -1 "$f"
+}
+
+# decision_record <key> <action> <path> <topic>
+#
+# The path and topic are written as comments for the human who opens this
+# directory in six weeks wondering what these hashes are. Nothing reads them.
+decision_record() {
+  local dir; dir="$(decision_dir)"
+  mkdir -p "$dir" || return 1
+  printf '%s\n# %s\n# %s\n' "$2" "$3" "$4" > "$dir/$1" || return 1
+}
+
+decision_forget() { rm -f "$(decision_dir)/$1"; }
 
 # ---------- hooks ----------
 # has_hook <name> — is it defined by the config?
