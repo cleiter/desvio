@@ -34,6 +34,24 @@ rule() {
   printf '%s%s%s\n' "$DIM" "────────────────────────────────────────────────────────────────────────" "$OFF"
 }
 
+# Is there a human here to answer a question?
+#
+# Both ends have to be a terminal: stdout so the question is visible, stdin
+# because that is where the answer is read from. A build in CI, in a cron job,
+# or with its output piped has neither and must never stop for input.
+#
+# DESVIO_INTERACTIVE overrides the detection in both directions — `0` for a
+# wrapper that runs desvio on a terminal but wants no questions, `1` for one
+# that answers them on stdin. It is also how the test suite exercises the
+# prompts, which otherwise no test could reach.
+interactive() {
+  case "${DESVIO_INTERACTIVE:-}" in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  [ -t 0 ] && [ -t 1 ]
+}
+
 # git in the upstream checkout, and git in the build worktree. Hooks get `in_tree`
 # for running anything else there.
 gitr()    { git -C "$DESVIO_REPO" "$@"; }

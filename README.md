@@ -174,15 +174,20 @@ So the resolver is asked to read each conflicted file end to end afterwards, and
 
 That mark is a lead, not a verdict — the gate still decides. `DESVIO_SUSPECT=fail` stops at the merge instead, for when you would rather not wait for the gate to confirm it.
 
-**A bisect.** The integration branch is a straight chain of merge commits, one per manifest branch, in order. So the question is answerable by re-running the gate over that chain:
+**A bisect.** The integration branch is a straight chain of merge commits, one per manifest branch, in order. So the question is answerable by re-running the gate over that chain — and when the gate fails on a terminal, desvio offers to:
 
-```sh
-desvio build --bisect-gate
+```
+ Bisect now? Re-runs the gate over the merge chain — about 5 more
+ gate runs, and your 3 branches stay untouched either way.
+
+ [Y/n]
 ```
 
 It binary-searches for the first merge where the gate breaks, then spends one more probe merging that branch onto the plain base alone — because "broken against upstream" and "broken against the branches above it" want opposite fixes, and it should not guess between them. It ends by naming the branch, its manifest line, and the command to rebase it.
 
-Off by default: an unasked-for multi-minute bisect appended to an already-failed build is not a kindness. `DESVIO_BISECT_GATE=1` opts in for unattended runs. Define `desvio_verify_quick` — the fast half of your gate — and the probes use that instead:
+The question comes *after* the failure is already on screen, so answering no costs nothing but the keystroke — and it is only ever asked when there is someone to ask. A build with its output piped, in CI, or in a cron job has no terminal, never stalls, and prints the command instead. `desvio build --bisect-gate` answers yes up front for those runs, `--no-bisect-gate` answers no, and `DESVIO_BISECT_GATE` pins either answer in the config.
+
+Define `desvio_verify_quick` — the fast half of your gate — and the probes use that instead:
 
 ```sh
 desvio_verify()       { in_tree npm run typecheck; in_tree npm run lint; }
@@ -212,7 +217,8 @@ The tree is left exactly as it failed, including after Ctrl-C. Look at it there 
 | `DESVIO_RESOLVER_MODEL` | `opus` | |
 | `DESVIO_RESOLVER_EFFORT` | `high` | one conflict costs one agent call and rerere then replays it forever, so buy the thinking |
 | `DESVIO_SUSPECT` | `warn` | `fail` to stop the build when the resolver flags its own resolution |
-| `DESVIO_BISECT_GATE` | `0` | `1` to bisect automatically when the gate fails |
+| `DESVIO_BISECT_GATE` | `ask` | what to do when the gate fails: `ask` on a terminal and print the command otherwise, `1` always bisect, `0` never |
+| `DESVIO_INTERACTIVE` | auto | `0` never ask questions, `1` ask and read the answer from stdin. Detected from the terminal otherwise |
 
 Hooks, all optional, called in this order:
 
@@ -223,7 +229,7 @@ Hooks, all optional, called in this order:
 | `desvio_seed` | anything generated that the gate needs and git ignores |
 | `desvio_build` | compile |
 | `desvio_verify` | **the gate** |
-| `desvio_verify_quick` | the fast half of the gate, used only by `--bisect-gate`. If it does not reproduce a failure, desvio refuses to bisect rather than guess |
+| `desvio_verify_quick` | the fast half of the gate, used only by a bisect. If it does not reproduce a failure, desvio refuses to bisect rather than guess |
 | `desvio_next_steps` | printed under the summary |
 | `desvio_resolve_conflict` | replace the built-in resolver. Takes `<topic> <subject>`, returns 0 when every marker is gone. May set `RESOLVER_SUSPECT` to one line when it cleared every marker but believes the result is still broken |
 

@@ -23,8 +23,13 @@
 #
 # Everything between them is a directly observed pass→fail pair.
 
-# ---------- no flag: say how to find out ----------
-gate_failed_hint() {
+# ---------- the gate failed: say what happened ----------
+#
+# Printed on every gate failure, before the decision about bisecting is made,
+# because none of it depends on that decision: the status, the tree, the
+# resolver's leads and the warning not to fix anything in the build tree are
+# true whether a bisect follows or not.
+gate_failed_banner() {
   local status="$1" n=0
   n=$(bisect_candidate_count)
   printf '\n'
@@ -38,15 +43,57 @@ gate_failed_hint() {
     "$(plural "$n" branch)"
   printf " the one named in the error. A branch merges cleanly, four merge on top of\n"
   printf " it, and the gate reports a file none of them touched.\n"
-  printf "\n %sTo find out — re-runs the gate over the merge chain:%s\n" "$B" "$OFF"
-  printf "   desvio build --bisect-gate\n"
-  if ! has_hook desvio_verify_quick; then
-    printf "\n Make those runs cheap first, with the fast half of your gate:\n"
-    printf "   %sdesvio_verify_quick() { in_tree npm run typecheck; }%s\n" "$DIM" "$OFF"
-  fi
   printf "\n Look, but do not fix it in the build tree — the next build resets and\n"
   printf " cleans it. Fixes belong on the topic branch in %s.\n" "$DESVIO_REPO"
+}
+
+# Not bisecting — declined, --no-bisect-gate, or nobody there to ask. Name the
+# command instead of running it, so the answer stays one line away.
+gate_failed_hint() {
+  printf "\n %sTo find out WHICH — re-runs the gate over the merge chain:%s\n" "$B" "$OFF"
+  printf "   desvio build --bisect-gate\n"
+  bisect_quick_hint
   rule
+}
+
+# The single thing that makes a bisect cheap, said wherever the cost comes up —
+# and only the first time. The prompt and the hint under it both want to raise
+# it, and they can appear four lines apart.
+BISECT_QUICK_HINTED=0
+bisect_quick_hint() {
+  has_hook desvio_verify_quick && return 0
+  [ "$BISECT_QUICK_HINTED" = 0 ] || return 0
+  BISECT_QUICK_HINTED=1
+  printf "\n Make those runs cheap, with the fast half of your gate:\n"
+  printf "   %sdesvio_verify_quick() { in_tree npm run typecheck; }%s\n" "$DIM" "$OFF"
+}
+
+# ---------- a human is here: offer the bisect ----------
+#
+# The question is asked AFTER the banner rather than instead of it, so the
+# answer is never the price of seeing what failed — Ctrl-C, EOF or a stray
+# newline at this prompt all leave you with the same output --no-bisect-gate
+# would have given.
+#
+# Default yes. The prompt only appears when the gate has already failed and a
+# human is watching, and at that point the answer is almost always "well, which
+# branch was it" — that is the entire question this tool exists to answer.
+bisect_ask() {
+  local n reply
+  n=$(bisect_candidate_count)
+  printf "\n %sBisect now?%s Re-runs the gate over the merge chain — about %s more\n" \
+    "$B" "$OFF" "$((3 + $(bisect_log2 "$n")))"
+  printf " gate runs, and your %s stay untouched either way.\n" "$(plural "$n" branch)"
+  bisect_quick_hint
+  printf "\n %s[Y/n]%s " "$B" "$OFF"
+
+  # A failed read is EOF — a closed stdin, or Ctrl-D. Treat it as no rather than
+  # as the default: nobody typed anything, so nobody agreed to anything.
+  if ! IFS= read -r reply; then printf '\n'; return 1; fi
+  case "$reply" in
+    ""|[Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *)                    return 1 ;;
+  esac
 }
 
 # A gate failure that the resolver already predicted costs nothing to report, so
@@ -113,9 +160,7 @@ bisect_gate() {
   # the worktree back. See build_cleanup in cmd-build.sh.
   DESVIO_BISECT_RESTORE="$final"
 
-  printf '\n'
-  bisect_suspect_hint
-  log "the gate failed — bisecting $(plural "$n" branch) to find out which one"
+  log "bisecting $(plural "$n" branch) to find out which one"
   printf '       %sabout %s gate runs%s\n' "$DIM" "$((3 + $(bisect_log2 "$n")))" "$OFF"
   if [ "$BISECT_QUICK" = 1 ]; then
     printf '       %sprobing with desvio_verify_quick%s\n' "$DIM" "$OFF"

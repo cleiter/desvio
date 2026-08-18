@@ -20,8 +20,9 @@ usage: desvio build [<base>] [options]
   --no-resolve      never call the agent; stop at the first conflict.
   --keep-going      report a failed branch and carry on with the rest.
   --bisect-gate     when the gate fails, re-run it over the merge chain to find
-                    the branch that broke it. Costs a handful more gate runs;
-                    define desvio_verify_quick to make them cheap.
+                    the branch that broke it. On a terminal desvio offers this
+                    anyway; the flag answers yes up front, for unattended runs.
+  --no-bisect-gate  never bisect, and never ask. Print the command instead.
   --forget <branch> ignore this branch's recorded rerere resolution and resolve
                     the conflict again from scratch. Repeatable. For when a
                     resolution was wrong and every build has been replaying it.
@@ -61,10 +62,15 @@ cmd_build() {
   done
 
   load_config
-  # The flag wins over the config; the config knob exists so an unattended run
-  # can opt in once. Resolved here rather than in the parse loop because
-  # DESVIO_BISECT_GATE does not exist until load_config has sourced the config.
-  [ -n "$do_bisect" ] || do_bisect="${DESVIO_BISECT_GATE:-0}"
+  # Three values, not two: 1 bisect, 0 never, `ask` put the question to whoever
+  # is watching. `ask` is the default because the answer is what the tool is
+  # for — but only a terminal can be asked, so with no human there `ask`
+  # degrades to the printed command and an unattended build never stalls.
+  #
+  # The flag wins over the config; the config knob exists to pin either answer
+  # once. Resolved here rather than in the parse loop because DESVIO_BISECT_GATE
+  # does not exist until load_config has sourced the config.
+  [ -n "$do_bisect" ] || do_bisect="${DESVIO_BISECT_GATE:-ask}"
   acquire_build_lock
   [ -n "$base_ref" ] || base_ref="$DESVIO_BASE"
 
@@ -311,10 +317,18 @@ cmd_build() {
       # No build_summary on this path. Its first line is "$DESVIO_NAME is
       # ready", and a green banner over a build that failed its gate is the
       # exact lie the gate exists to prevent.
+      gate_failed_banner "$gate_status"
+      # Ask only once the banner is on screen: the question is "now that you
+      # have seen THIS, do you want to know which branch", and it has to be
+      # answerable with no. `ask` with nobody to ask resolves to no.
+      if [ "$do_bisect" = ask ]; then
+        do_bisect=0
+        if interactive && bisect_ask; then do_bisect=1; fi
+      fi
       if [ "$do_bisect" = 1 ]; then
         bisect_gate "$base"
       else
-        gate_failed_hint "$gate_status"
+        gate_failed_hint
       fi
       # The gate's own status, unchanged. `desvio build` exiting with the code
       # your gate exited with is what CI reads, and tests/test-assembly.sh

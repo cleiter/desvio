@@ -52,27 +52,87 @@ run_desvio build --bisect-gate
 assert_eq 3 "$STATUS" "the gate's status is the build's"
 
 # ---------------------------------------------------------------------------
-it "without the flag it only says how to find out"
+# The default is to ASK, and there is nobody here to ask: no terminal, so no
+# question, and a build in CI or in a cron job can never stall on one.
+it "with nobody to ask it only says how to find out"
 setup
 fixture_config "$GATE"
 manifest aaa poison zzz
 run_desvio build
 
 if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+assert_not_contains "$OUT" "Bisect now?" "it does not ask a terminal that is not there"
 assert_contains "$OUT" "desvio build --bisect-gate" "it prints the command"
 assert_contains "$OUT" "desvio_verify_quick" "and suggests the fast hook"
-assert_not_contains "$OUT" "bisecting" "but does not bisect uninvited"
+assert_not_contains "$OUT" "bisecting" "and does not bisect uninvited"
 
 # ---------------------------------------------------------------------------
-it "DESVIO_BISECT_GATE=1 opts in, and --no-bisect-gate overrides it"
+# On a terminal the question is the default, because the answer is the whole
+# point of the tool. Enter takes it.
+it "on a terminal it offers the bisect, and Enter accepts"
 setup
+fixture_config "$GATE"
+manifest aaa poison zzz
+run_desvio_answering "" build
+
+assert_contains "$OUT" "Bisect now?" "it asks"
+assert_contains "$OUT" "poison broke the gate" "and a bare Enter runs it"
+if [ "$STATUS" -ne 0 ]; then ok "the build still fails"; else fail "the build still fails" "got 0"; fi
+
+it "y accepts too"
+setup
+fixture_config "$GATE"
+manifest aaa poison zzz
+run_desvio_answering "y" build
+assert_contains "$OUT" "poison broke the gate" "y bisects"
+
+# ---------------------------------------------------------------------------
+# Answering no must cost nothing: the banner is already on screen, so declining
+# leaves exactly the output --no-bisect-gate would have produced.
+it "answering no declines and leaves the command behind"
+setup
+fixture_config "$GATE"
+manifest aaa poison zzz
+run_desvio_answering "n" build
+
+assert_contains "$OUT" "the gate failed" "the failure is still reported"
+assert_not_contains "$OUT" "bisecting" "nothing is bisected"
+assert_contains "$OUT" "desvio build --bisect-gate" "and the command is still there"
+if [ "$STATUS" -ne 0 ]; then ok "the build still fails"; else fail "the build still fails" "got 0"; fi
+
+# ---------------------------------------------------------------------------
+it "--bisect-gate and DESVIO_BISECT_GATE=1 skip the question"
+setup
+fixture_config "$GATE"
+manifest aaa poison zzz
+run_desvio_answering "n" build --bisect-gate
+assert_not_contains "$OUT" "Bisect now?" "the flag is the answer, so nothing is asked"
+assert_contains "$OUT" "poison broke the gate" "and it bisects regardless of what was typed"
+
+fixture_config "$GATE" "DESVIO_BISECT_GATE=1"   # fixture_config truncates the manifest
+manifest aaa poison zzz
+run_desvio_answering "n" build
+assert_not_contains "$OUT" "Bisect now?" "the config knob answers it too"
+assert_contains "$OUT" "poison broke the gate" "and bisects"
+
+# ---------------------------------------------------------------------------
+it "--no-bisect-gate and DESVIO_BISECT_GATE=0 never ask"
+setup
+fixture_config "$GATE"
+manifest aaa poison zzz
+run_desvio_answering "y" build --no-bisect-gate
+assert_not_contains "$OUT" "Bisect now?" "the flag is the answer here as well"
+assert_not_contains "$OUT" "bisecting" "and it is no"
+
 fixture_config "$GATE" "DESVIO_BISECT_GATE=1"
 manifest aaa poison zzz
-run_desvio build
-assert_contains "$OUT" "poison broke the gate" "the config knob bisects"
+run_desvio_answering "y" build --no-bisect-gate
+assert_not_contains "$OUT" "bisecting" "the flag beats the config"
 
-run_desvio build --no-bisect-gate
-assert_not_contains "$OUT" "bisecting" "and the flag turns it back off"
+fixture_config "$GATE" "DESVIO_BISECT_GATE=0"
+manifest aaa poison zzz
+run_desvio_answering "y" build
+assert_not_contains "$OUT" "Bisect now?" "the config can pin it off, terminal or not"
 
 # ---------------------------------------------------------------------------
 # Upstream broke, not you. Accusing a branch here would be the worst wrong

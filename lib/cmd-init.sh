@@ -48,9 +48,9 @@ desvio_verify() {
   in_tree npm run lint
 }
 
-# The fast half of the gate. Only \`desvio build --bisect-gate\` runs this, to
-# find WHICH branch broke the gate without paying for the whole thing a handful
-# of times. It has to be able to see the same failures the real gate does; if it
+# The fast half of the gate. Only a bisect runs this — the search for WHICH
+# branch broke the gate, which desvio offers when the gate fails — so that
+# finding out does not cost the whole gate a handful of times. It has to be able to see the same failures the real gate does; if it
 # cannot, desvio says so and refuses to bisect rather than accuse a branch.
 # desvio_verify_quick() { in_tree npm run typecheck; }
 

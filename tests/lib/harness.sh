@@ -78,6 +78,17 @@ run_desvio() {
   return 0
 }
 
+# run_desvio_answering <input> <desvio args...> — a run with a human on the
+# other end. DESVIO_INTERACTIVE=1 is what makes desvio ask its questions at all:
+# a test captures stdout through $(...), so the terminal detection interactive()
+# does by itself is false here and always will be. <input> is what gets typed;
+# pass "" for a bare Enter, and plain run_desvio for a stdin that is closed.
+run_desvio_answering() {
+  local input="$1"; shift
+  OUT="$(printf '%s\n' "$input" | DESVIO_INTERACTIVE=1 "$DESVIO_BIN" "$@" 2>&1)"; STATUS=$?
+  return 0
+}
+
 # assert_dies_with <pattern> <desvio args...>
 assert_dies_with() {
   local want="$1"; shift
