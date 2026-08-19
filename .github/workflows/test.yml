@@ -15,14 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: syntax
-        run: bash -n bin/desvio lib/*.sh examples/paseo/*.sh tests/*.sh tests/lib/harness.sh
-
       # `bash -n` only parses. It would not have caught a single one of the
       # bugs this gate exists for — the unquoted expansions that word-split on
       # a filename with a space, or a `cd` whose failure is ignored right
       # before an agent runs in the directory it failed to enter.
-      - name: shellcheck
+      #
+      # Both gates live in tests/run.sh and are invoked from there rather than
+      # spelled out again here. This step used to carry its own copy of the file
+      # list, which meant a full local `tests/run.sh` could pass while CI stopped
+      # before running a single test — the exact thing that happened.
+      - name: lint
         run: |
           # Install only if the runner image does not already carry it, rather
           # than assuming either way — the images change without notice.
@@ -31,15 +33,15 @@ jobs:
             else sudo apt-get update && sudo apt-get install -y shellcheck
             fi
           fi
-          shellcheck --version
-          shellcheck -S warning bin/desvio lib/*.sh examples/paseo/*.sh \
-            tests/*.sh tests/lib/harness.sh
+          bash tests/run.sh --lint-only
 
       - name: versions
         run: bash --version | head -1; git --version
 
+      # --no-lint because the step above already ran it, and a second pass buys
+      # nothing but seven seconds.
       - name: tests
-        run: bash tests/run.sh
+        run: bash tests/run.sh --no-lint
 
       # The valuable half of this matrix. macOS ships bash 3.2 as /bin/bash and
       # the README promises 3.2 support, but bin/desvio is `#!/usr/bin/env bash`
@@ -52,4 +54,4 @@ jobs:
           /bin/bash --version | head -1
           mkdir -p "$RUNNER_TEMP/bash32"
           ln -sf /bin/bash "$RUNNER_TEMP/bash32/bash"
-          PATH="$RUNNER_TEMP/bash32:$PATH" /bin/bash tests/run.sh
+          PATH="$RUNNER_TEMP/bash32:$PATH" /bin/bash tests/run.sh --no-lint
