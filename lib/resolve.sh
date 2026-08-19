@@ -99,7 +99,7 @@ resolve_deletion() {
 
 resolve_deletion_with_claude() {
   local topic="$1" subject="$2" path="$3" cls="$4"
-  local deleter survivor who gone log before after verdict
+  local deleter survivor who gone base changed log before after verdict
 
   command -v claude >/dev/null 2>&1 || {
     warn "no 'claude' on PATH — cannot decide the deletion of $path"
@@ -121,6 +121,8 @@ resolve_deletion_with_claude() {
   # file and guess, and a guess is what the reference-scan approach was rejected
   # for. Bounded, because a prompt is not a place to paste a whole history.
   deleter=$(gitw log -1 --format='%h %s%n%n%b' "$gone" -- "$path" 2>/dev/null | head -30)
+  base=$(gitw merge-base HEAD MERGE_HEAD 2>/dev/null)
+  changed=$(gitw diff "$base" "$survivor" -- "$path" 2>/dev/null | head -200)
 
   step "${YEL}$topic${OFF} — $path: $cls, deciding with $DESVIO_RESOLVER_MODEL (read-only, no shell)"
 
@@ -144,6 +146,10 @@ full and unmodified.
 
 The commit that deleted it:
 $deleter
+
+What the surviving side changed in it since the merge base, first 200 lines —
+the whole file is in the working directory if you need the rest:
+$changed
 
 Neither side is automatically right. Being merged later does not make a change
 newer, and an integration branch can carry a deliberate refactor just as a topic

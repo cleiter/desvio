@@ -1025,10 +1025,13 @@ demote_renames() {
 # fails toward "treat it as an ordinary deletion and ask" — the safe direction,
 # and the one that costs an agent call rather than a wrong answer.
 rename_sources() {
-  local st old new out=$'\n'
+  local st old out=$'\n'
   while IFS= read -r -d '' st; do
     case "$st" in
-      R*|C*) IFS= read -r -d '' old; IFS= read -r -d '' new; out="$out$old"$'\n' ;;
+      # The second field of a rename is read and thrown away: this function
+      # answers what a path USED to be called, and `_` says so where a named
+      # variable would only invite a reader to look for the use that is not there.
+      R*|C*) IFS= read -r -d '' old; IFS= read -r -d '' _; out="$out$old"$'\n' ;;
       *)     IFS= read -r -d '' old ;;
     esac
   done < <(gitw diff --name-status -M -C -z "$1" "$2" 2>/dev/null)

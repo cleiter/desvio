@@ -265,7 +265,7 @@ git -C "$REPO" commit -qm "add a submodule"
 git -C "$REPO" push -q origin main
 git -C "$REPO" fetch -q origin
 git -C "$REPO" checkout -q -B bumper origin/main
-bumped=$(git -C "$REPO" commit-tree "$(git -C "$REPO" rev-parse HEAD^{tree})" -m x -p "$sub")
+bumped=$(git -C "$REPO" commit-tree "$(git -C "$REPO" rev-parse "HEAD^{tree}")" -m x -p "$sub")
 git -C "$REPO" update-index --add --cacheinfo "160000,$bumped,sub"
 git -C "$REPO" commit -qm "bumper: move the submodule"
 git -C "$REPO" checkout -q -B unsub origin/main
