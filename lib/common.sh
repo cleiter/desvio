@@ -291,17 +291,26 @@ default_base() {
 # A missing input is recorded as absent rather than being an error: for a
 # skip-the-work-if-nothing-changed hint, "the file is gone" means changed, and
 # turning a cache miss into a failed build would be the wrong trade.
+#
+# git hash-object rather than shasum, for the reason already given above
+# decision_key: it is the one hashing tool guaranteed to be present, since
+# desvio cannot run at all without git. shasum ships with macOS Perl but is
+# absent on stock Arch and on minimal container images, and its absence is
+# silent here — the command substitution yields an empty digest, a missing
+# stamp file reads as the empty string too, and stamp_changed compares the
+# two and reports 'unchanged'. The hook then skips its work on every build,
+# starting with the very first one on a virgin worktree.
 stamp_digest() {
   local name="$1"; shift
   ( cd "$DESVIO_WORKTREE" || exit 1
     local f
     for f in "$@"; do
       if [ -f "$f" ]; then
-        printf '%s\0%s\0' "$f" "$(shasum -a 256 < "$f" | cut -d' ' -f1)"
+        printf '%s\0%s\0' "$f" "$(git hash-object --stdin < "$f")"
       else
         printf '%s\0absent\0' "$f"
       fi
-    done | shasum -a 256 | cut -d' ' -f1 )
+    done | git hash-object --stdin )
 }
 
 stamp_changed() {
