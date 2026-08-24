@@ -314,7 +314,19 @@ cmd_build() {
       n=$(gitw diff --name-only "$before..$after" | wc -l | tr -d ' ')
       NFILES[$i]="$n"
       MERGES[$i]="$after"
-      step "${YEL}$b${OFF} → $(plural "$n" file)"
+      if [ "$n" -eq 0 ]; then
+        # The merge DID commit, so the tip was not already reachable from HEAD
+        # — this is not one of dead_branch_why's cases. Yet not one file
+        # differs. That is what a branch looks like once upstream has taken it
+        # by squash or rebase: the commits are rewritten, so no sha ever
+        # matches and topology sees a branch that is still ahead; only the tree
+        # gives it away. Say so, rather than printing "0 files" and leaving the
+        # line looking like an ordinary small merge.
+        WHY[$i]="every change in it is already in the build, under different commits — a squash or rebase upstream looks like this"
+        step_warn "${YEL}$b${OFF} → no changes: it merged, and not one file differs"
+      else
+        step "${YEL}$b${OFF} → $(plural "$n" file)"
+      fi
     fi
   done
   # Back to untagged: everything below is about the manifest as a whole, and a
@@ -1291,6 +1303,13 @@ build_summary() {
         "decided-cached")   mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file) · delete/modify replayed from the decision cache${OFF}" ;;
         *)                  mark="${GRN}●${OFF}"; stat="${DIM}$(plural "${NFILES[$i]}" file)${OFF}" ;;
       esac
+      # A merge that committed and changed nothing. Not green: "0 files" reads
+      # as a merge that went fine, and this one is a manifest line carrying no
+      # work. The MERGES guard is what separates it from the dead lines above,
+      # whose NFILES is still its "0" initialiser because they never merged.
+      if [ "${NFILES[$i]}" = "0" ] && [ -n "${MERGES[$i]}" ]; then
+        mark="${YEL}○${OFF}"; stat="${YEL}no changes — nothing in this branch is missing from the build${OFF}"
+      fi
       if [ -n "${NOTES[$i]}" ]; then
         # The manifest's own syntax, so it reads as the line it came from. The
         # column is wide enough for a remote-prefixed name; a shorter one just

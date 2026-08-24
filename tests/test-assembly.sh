@@ -53,6 +53,30 @@ assert_contains "$OUT" "drop this manifest line" "the summary says what to do"
 assert_contains "$OUT" "alpha: change file.txt" "it names the commit its work landed in"
 
 # ---------------------------------------------------------------------------
+# The case topology cannot see: upstream took the branch by squash or rebase,
+# so the content is in the base but under a different sha. The tip is still not
+# an ancestor of the base, the merge really does commit, and the only evidence
+# is that the commit changes nothing. It used to be reported as "0 files", in
+# green, which reads like an ordinary small merge.
+it "a branch whose work landed upstream rewritten is called out, not counted as 0 files"
+setup
+# Same change, different commit — what a squash or rebase landing looks like.
+git -C "$REPO" checkout -q main
+printf '%s\n' "alpha-line" >> "$REPO/file.txt"
+git -C "$REPO" add -A
+git -C "$REPO" commit -qm "upstream: alpha, squashed"
+git -C "$REPO" push -q origin main
+fixture_config
+manifest alpha
+run_desvio build
+
+assert_eq 0 "$STATUS" "the build succeeds"
+assert_not_contains "$OUT" "0 files" "it never reports the merge as a file count"
+assert_contains "$OUT" "no changes: it merged, and not one file differs"   "the merge line says the branch brought nothing"
+assert_contains "$OUT" "nothing in this branch is missing from the build"   "and the summary marks the line rather than showing it as a clean merge"
+assert_contains "$OUT" "under different commits"   "it names the cause it can see: the content is in, the shas are not"
+
+# ---------------------------------------------------------------------------
 # The bug this guards: a branch created from the base and never committed to
 # also merges into nothing, and desvio used to call that "already upstream" and
 # tell you to delete the line — losing whatever is still uncommitted in its
