@@ -666,8 +666,8 @@ build_guards() {
     \$EDITOR <files>                 # resolve the <<<<<<< markers
     git add -A && git commit --no-edit
   then re-run. That teaches rerere the resolution and it replays on every
-  future build. To give up instead: git merge --abort, comment the branch out
-  of $DESVIO_MANIFEST, and re-run."
+  future build. To give up instead: desvio abort, then comment the branch out
+  of $DESVIO_MANIFEST and re-run."
   fi
 
   if [ -n "$(gitw status --porcelain 2>/dev/null)" ]; then
@@ -837,7 +837,8 @@ conflict_death() {
     git status
     \$EDITOR <files>
     git add -A && git commit --no-edit
-  Then re-run. rerere records the resolution and replays it next time."
+  Then re-run. rerere records the resolution and replays it next time.
+  To give up on this branch instead: desvio abort"
 }
 
 # ---------- ref safety ----------

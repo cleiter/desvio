@@ -134,6 +134,18 @@ desvio does not run that `update-ref` itself, on purpose. It cannot tell a misbe
 
 Turn it off with `desvio build --no-resolve` and resolve by hand; rerere records your resolution the same way. Replace it by defining `desvio_resolve_conflict` in the config.
 
+### Giving up on a branch
+
+A conflict is left in the build tree on purpose: resolving it there and committing is what teaches rerere the resolution, and every build after that replays it for free. When you would rather not — the branch is stale, you will rebase it tomorrow — `desvio abort` throws the half-finished merge away without your having to enter the tree:
+
+```sh
+desvio abort                     # the build tree goes back to the last merge that worked
+$EDITOR manifest.txt             # comment the branch out, or rebase it
+desvio build
+```
+
+It touches nothing else: not your topic branches, not the manifest, not what rerere has recorded. With no merge in progress it says so and exits 0, so it is safe to run without looking first. To resolve the conflict again from scratch because the *recorded* resolution is the problem, use `desvio build --forget <branch>` instead.
+
 ### The conflicts rerere will not record
 
 Not every conflict has markers in it. When one side **deletes** a file the other side changed, git leaves the index with stages 1 and 2 (or 1 and 3) and the surviving side's file, whole and ordinary, in the tree. There is nothing to record a resolution against, and rerere says so: `git rerere remaining` lists the path, `git rerere status` does not, and `MERGE_RR` stays empty however many times you resolve it. That conflict comes back on every single build, at any base, for ever.
