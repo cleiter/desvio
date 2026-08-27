@@ -180,6 +180,48 @@ if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "
 assert_not_contains "$OUT" "is ready" "and prints no green banner"
 
 # ---------------------------------------------------------------------------
+# The failure this guards: upstream renamed a function, a branch merged
+# cleanly and called it by the old name, and desvio died under `set -e` inside
+# run_hook with nothing but npm's own output on screen — no banner, no
+# attribution, no bisect offer. desvio_build now goes through run_gate exactly
+# like desvio_verify, so a broken build gets the same treatment.
+it "a failing desvio_build fails the build and is attributed like a gate failure"
+setup
+fixture_config 'desvio_build() { return 2; }'
+manifest alpha
+run_desvio build
+
+assert_eq 2 "$STATUS" "the hook's own exit status is the build's"
+assert_contains "$OUT" "the build failed" "the banner names it a build failure, not a gate failure"
+assert_contains "$OUT" "desvio_build exited 2" "and names the hook that failed"
+assert_not_contains "$OUT" "is ready" "no green banner over a failed build"
+
+# ---------------------------------------------------------------------------
+it "a failing desvio_install is attributed the same way"
+setup
+fixture_config 'desvio_install() { return 5; }'
+manifest alpha
+run_desvio build
+
+assert_eq 5 "$STATUS" "the hook's own exit status is the build's"
+assert_contains "$OUT" "install failed" "the banner names install, not the gate"
+assert_contains "$OUT" "desvio_install exited 5" "and names the hook that failed"
+assert_not_contains "$OUT" "is ready" "no green banner over a failed install"
+
+# ---------------------------------------------------------------------------
+# Same mutation check as the gate test above, mirrored onto desvio_build: the
+# fix that made run_gate survive a hook's failure without losing errexit
+# INSIDE the hook applies to all four hooks now, not only desvio_verify.
+it "a build whose first command fails does not pass because its last one succeeded"
+setup
+fixture_config 'desvio_build() { false; true; }'
+manifest alpha
+run_desvio build
+
+if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+assert_not_contains "$OUT" "is ready" "and prints no green banner"
+
+# ---------------------------------------------------------------------------
 it "no gate at all is loud but not fatal"
 setup
 fixture_config

@@ -191,9 +191,11 @@ A real one, from the build this tool came out of. Upstream started validating pe
 
 So `desvio_verify` is not optional decoration. Make it the strictest check you are willing to wait for. desvio warns on every build that has no gate.
 
+The gate starts before `desvio_verify` runs, too. A tree that will not even build has failed it as surely as one that fails typecheck — upstream renames a function, a branch merges cleanly because it touches a different part of the same file, and adds a call to the old name. No conflict, no marker, nothing for the resolver to flag; just `desvio_build` failing twenty branches deep. desvio catches that the same way it catches a failing `desvio_verify`: the build stops, says which hook failed, and offers to find out which branch did it.
+
 ## Which branch broke the gate?
 
-A gate failure names a file. It does not name a branch, and the branch is what you need — with sixteen manifest lines, four merges stacked above the culprit, and an error in a file none of them appear to touch, "which of mine did this" can cost more than the fix.
+A gate failure names a file. It does not name a branch, and the branch is what you need — with sixteen manifest lines, four merges stacked above the culprit, and an error in a file none of them appear to touch, "which of mine did this" can cost more than the fix. The same is true when it is `desvio_build` that failed rather than `desvio_verify` — the branch you need is found the same way either time.
 
 Two things answer it, cheapest first.
 
@@ -211,7 +213,7 @@ So the resolver is asked to read each conflicted file end to end afterwards, and
 
 That mark is a lead, not a verdict — the gate still decides. `DESVIO_SUSPECT=fail` stops at the merge instead, for when you would rather not wait for the gate to confirm it.
 
-**A bisect.** The integration branch is a straight chain of merge commits, one per manifest branch, in order. So the question is answerable by re-running the gate over that chain — and when the gate fails on a terminal, desvio offers to:
+**A bisect.** The integration branch is a straight chain of merge commits, one per manifest branch, in order. So the question is answerable by re-running the gate over that chain — and when the gate fails on a terminal, desvio offers to (the same offer follows a `desvio_build` failure, not only `desvio_verify`):
 
 ```
  A bisect re-runs the gate over the merge chain — about 5 more
@@ -257,7 +259,7 @@ The tree is left exactly as it failed, including after Ctrl-C. Look at it there 
 | `DESVIO_BISECT_GATE` | `ask` | what to do when the gate fails: `ask` on a terminal and print the command otherwise, `1` always bisect, `0` never |
 | `DESVIO_INTERACTIVE` | auto | `0` never ask questions, `1` ask and read the answer from stdin. Detected from the terminal otherwise |
 
-Hooks, all optional, called in this order:
+Hooks, all optional, called in this order. `desvio_install`, `desvio_seed`, `desvio_build` and `desvio_verify` are all caught and attributed the same way — a failure in any of them prints the banner, gets a bisect offer, and (with `--bisect-gate`) names the branch:
 
 | Hook | |
 |---|---|

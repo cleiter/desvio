@@ -6,14 +6,28 @@
 # progress. So "which of my branches did this" is an answerable question: check
 # out merge commit K, run the gate, and binary-search for the first K that fails.
 #
-# This exists because of one specific failure. Upstream deleted an import and
-# three StyleSheet entries from a file; a topic branch had MOVED the code that
-# used them into a new helper. Git merged the deletion CLEANLY and conflicted
-# only on the usage. The resolver resolved the usage correctly and removed every
-# marker — so every guard passed, and the result referenced five symbols that no
-# longer existed. Three more branches merged on top, then the install, then the
-# build, then eight typecheck errors in one file with nothing whatsoever
-# connecting them to the branch that caused them.
+# "The gate" here means the whole install → seed → build → verify pipeline, not
+# only the last of those. A tree that will not build has failed it as surely as
+# one that fails typecheck, and the search below cannot tell the difference —
+# nor does it need to; see bisect_pipeline.
+#
+# This exists because of two specific failures.
+#
+# One: upstream deleted an import and three StyleSheet entries from a file; a
+# topic branch had MOVED the code that used them into a new helper. Git merged
+# the deletion CLEANLY and conflicted only on the usage. The resolver resolved
+# the usage correctly and removed every marker — so every guard passed, and the
+# result referenced five symbols that no longer existed. Three more branches
+# merged on top, then the install, then the build, then eight typecheck errors
+# in one file with nothing whatsoever connecting them to the branch that caused
+# them.
+#
+# Two: upstream renamed a function; a topic branch, merging cleanly because it
+# touched a different part of the same file, added a new call to the OLD name.
+# No conflict, no marker, nothing for the resolver to flag — just a build that
+# would not compile, twenty-four branches deep, with desvio's own output
+# stopping at npm's and naming no branch at all. That failure is what taught
+# desvio to gate desvio_build the same way it already gated desvio_verify.
 #
 # The search is only sound because it probes BOTH endpoints, and those two
 # probes are not overhead — they are the two honest-failure answers:
@@ -23,26 +37,40 @@
 #
 # Everything between them is a directly observed pass→fail pair.
 
+# Which hook actually failed — desvio_install, desvio_seed, desvio_build or
+# desvio_verify — set by build_failed in cmd-build.sh before it calls
+# bisect_gate. Defaults to desvio_verify so a hook that forgets to set it (there
+# is currently only the one caller) still gets sensible wording rather than an
+# empty hook name.
+BISECT_FAILED_HOOK="${BISECT_FAILED_HOOK:-desvio_verify}"
+
 # ---------- the gate failed: say what happened ----------
 #
-# Printed on every gate failure, before the decision about bisecting is made,
-# because none of it depends on that decision: the status, the tree, the
-# resolver's leads and the warning not to fix anything in the build tree are
-# true whether a bisect follows or not.
+# Printed on every gate failure — install, seed, build or verify — before the
+# decision about bisecting is made, because none of it depends on that
+# decision: the status, the tree, the resolver's leads and the warning not to
+# fix anything in the build tree are true whether a bisect follows or not.
 gate_failed_banner() {
-  local status="$1" n=0
+  local hook="$1" status="$2" n=0 headline
   n=$(bisect_candidate_count)
+  case "$hook" in
+    desvio_verify)  headline="the gate failed" ;;
+    desvio_build)   headline="the build failed" ;;
+    desvio_seed)    headline="the seed step failed" ;;
+    desvio_install) headline="install failed" ;;
+    *)              headline="$hook failed" ;;
+  esac
   printf '\n'
   rule
-  printf " %s%s%s\n" "$RED" "the gate failed — this build is not usable" "$OFF"
+  printf " %s%s — this build is not usable%s\n" "$RED" "$headline" "$OFF"
   rule
-  printf "\n desvio_verify exited %s. The tree is exactly as it failed:\n" "$status"
+  printf "\n %s exited %s. The tree is exactly as it failed:\n" "$hook" "$status"
   printf "   %s   %s%s%s\n" "$DESVIO_BRANCH" "$DIM" "$DESVIO_WORKTREE" "$OFF"
   bisect_suspect_hint
   printf "\n Nothing above says WHICH of your %s did it, and it is very often not\n" \
     "$(plural "$n" branch)"
   printf " the one named in the error. A branch merges cleanly, four merge on top of\n"
-  printf " it, and the gate reports a file none of them touched.\n"
+  printf " it, and %s reports a file none of them touched.\n" "$hook"
   printf "\n Look, but do not fix it in the build tree — the next build resets and\n"
   printf " cleans it. Fixes belong on the topic branch in %s.\n" "$DESVIO_REPO"
 }
@@ -50,7 +78,9 @@ gate_failed_banner() {
 # Not bisecting — declined, --no-bisect-gate, or nobody there to ask. Name the
 # command instead of running it, so the answer stays one line away.
 gate_failed_hint() {
-  printf "\n %sTo find out WHICH — re-runs the gate over the merge chain:%s\n" "$B" "$OFF"
+  local hook="$1" what="the gate"
+  [ "$hook" = desvio_verify ] || what="the build"
+  printf "\n %sTo find out WHICH — re-runs %s over the merge chain:%s\n" "$B" "$what" "$OFF"
   printf "   desvio build --bisect-gate\n"
   bisect_quick_hint
   rule
@@ -79,10 +109,11 @@ bisect_quick_hint() {
 # human is watching, and at that point the answer is almost always "well, which
 # branch was it" — that is the entire question this tool exists to answer.
 bisect_ask() {
-  local n reply
+  local hook="$1" what="the gate" n reply
+  [ "$hook" = desvio_verify ] || what="the build"
   n=$(bisect_candidate_count)
-  printf "\n A bisect re-runs the gate over the merge chain — about %s more\n" \
-    "$((3 + $(bisect_log2 "$n")))"
+  printf "\n A bisect re-runs %s over the merge chain — about %s more\n" \
+    "$what" "$((3 + $(bisect_log2 "$n")))"
   printf " gate runs, and your %s stay untouched either way.\n" "$(plural "$n" branch)"
   bisect_quick_hint
   # The question goes HERE, on the prompt line, and not above the cost and the
@@ -171,12 +202,17 @@ bisect_gate() {
 
   # ---- endpoint 1: does the probe gate see this failure at all?
   #
-  # Skipped when the probe gate IS desvio_verify — we watched it fail on this
-  # exact tree a moment ago, and it is the most expensive probe there is. The
-  # cost of skipping is that a FLAKY gate goes unnoticed here, which is what the
-  # re-probe further down is for.
+  # Only meaningful when the probe gate is a SUBSTITUTE for what actually
+  # failed — desvio_verify_quick standing in for desvio_verify. When
+  # desvio_build itself failed, the probe pipeline re-runs that exact hook
+  # unchanged (see bisect_pipeline), so there is nothing to substitute and
+  # nothing this probe could tell us that the failure we already watched
+  # didn't. Skipped for the same reason when the probe gate IS desvio_verify —
+  # we watched it fail on this exact tree a moment ago, and it is the most
+  # expensive probe there is. The cost of skipping is that a FLAKY gate goes
+  # unnoticed here, which is what the re-probe further down is for.
   local hi_confirmed=0
-  if [ "$BISECT_QUICK" = 1 ]; then
+  if [ "$BISECT_QUICK" = 1 ] && [ "$BISECT_FAILED_HOOK" = desvio_verify ]; then
     bisect_probe "$final" "the full assembly" "$n"
     if [ "$PROBE_STATUS" -eq 0 ]; then
       bisect_restore "$final"
@@ -279,11 +315,21 @@ bisect_probe() {
 # the probe commit's lockfile genuinely differs, installing is exactly right —
 # gating a tree against the wrong dependencies would blame whichever branch the
 # search happened to be standing on.
+#
+# BISECT_GATE_HOOK is called through has_hook first — bisect_gate can now be
+# reached over a desvio_build failure with no desvio_verify defined at all
+# (build_failed offers a bisect whichever of the four hooks failed), and
+# calling an undefined function is a bash "command not found", exit 127, which
+# would misreport as the probe itself failing. Mirrors cmd_build's own
+# treatment of a missing desvio_verify: nothing further to check, not a
+# failure.
 bisect_pipeline() {
   run_hook desvio_install
   run_hook desvio_seed
   run_hook desvio_build
-  "$BISECT_GATE_HOOK"
+  if has_hook "$BISECT_GATE_HOOK"; then
+    "$BISECT_GATE_HOOK"
+  fi
 }
 
 # bisect_solo <base> <topic oid> <name> — sets BISECT_SOLO to
@@ -364,14 +410,18 @@ bisect_verdict_culprit() {
   local base="$1" final="$2" lo="$3" hi="$4" k="$5" solo="$6" n="$7" started="$8"
   local name="${CAND_B[$k]}" note="${NOTES[${CAND_I[$k]}]}" j
   local lo_oid="$base" lo_label="the base, none of your branches"
+  local broke="broke the gate" breaks="breaks the gate"
+  if [ "$BISECT_FAILED_HOOK" != desvio_verify ]; then
+    broke="broke the build"; breaks="breaks the build"
+  fi
   if [ "$lo" -gt 0 ]; then
     lo_oid="${CAND_OID[$((lo - 1))]}"; lo_label="after ${CAND_B[$((lo - 1))]}"
   fi
 
   printf '\n'
   rule
-  printf " %s%s broke the gate%s   %s%s%s\n" \
-    "$RED" "$name" "$OFF" "$DIM" "$(bisect_elapsed "$started")" "$OFF"
+  printf " %s%s %s%s   %s%s%s\n" \
+    "$RED" "$name" "$broke" "$OFF" "$DIM" "$(bisect_elapsed "$started")" "$OFF"
   rule
 
   printf "\n %spasses at%s\n   %s   %s of %s · %s\n" \
@@ -411,7 +461,7 @@ bisect_verdict_culprit() {
   printf "\n %ssee what that merge did%s\n   git -C %s diff %s %s\n" \
     "$B" "$OFF" "$DESVIO_REPO" "${lo_oid:0:9}" "${CAND_OID[$k]:0:9}"
   printf "\n %sor sit it out for one build%s — comment the line, keep the order:\n" "$B" "$OFF"
-  printf "   %s#%-28s # breaks the gate%s\n" "$DIM" "$name" "$OFF"
+  printf "   %s#%-28s # %s%s\n" "$DIM" "$name" "$breaks" "$OFF"
 
   printf "\n The tree is back at the full assembly %s — the failure you started\n" "${final:0:9}"
   printf " with, untouched. Inspect it there; do not fix it there, the next build\n"
@@ -419,17 +469,20 @@ bisect_verdict_culprit() {
 
   printf "\n %sBinary search: this is the first break it found, not a proof there is\n" "$DIM"
   printf " only one.%s" "$OFF"
-  [ "$BISECT_QUICK" = 1 ] && printf " %sProbed with desvio_verify_quick.%s" "$DIM" "$OFF"
+  if [ "$BISECT_QUICK" = 1 ] && [ "$BISECT_FAILED_HOOK" = desvio_verify ]; then
+    printf " %sProbed with desvio_verify_quick.%s" "$DIM" "$OFF"
+  fi
   printf '\n'
   rule
 }
 
 bisect_verdict_base() {
-  local base="$1" n="$2" started="$3"
+  local base="$1" n="$2" started="$3" broke="broke the gate"
+  [ "$BISECT_FAILED_HOOK" = desvio_verify ] || broke="broke the build"
   printf '\n'
   rule
-  printf " %sno branch of yours broke the gate — the base did%s   %s%s%s\n" \
-    "$RED" "$OFF" "$DIM" "$(bisect_elapsed "$started")" "$OFF"
+  printf " %sno branch of yours %s — the base did%s   %s%s%s\n" \
+    "$RED" "$broke" "$OFF" "$DIM" "$(bisect_elapsed "$started")" "$OFF"
   rule
   printf "\n %sfails at%s\n   %s   %s\n" "$B" "$OFF" "${base:0:9}" "$(gitr log -1 --format='%s' "$base")"
   printf "   %swith not one of your %s merged.%s\n" "$DIM" "$(plural "$n" branch)" "$OFF"
@@ -437,7 +490,7 @@ bisect_verdict_base() {
   printf " wrong, or the tree carries state from before —\n"
   printf " DESVIO_CLEAN_KEEP keeps \"%s\" across builds AND across\n" "${DESVIO_CLEAN_KEEP:-}"
   printf " every probe, so a stale one of those follows the search all the way down.\n"
-  if [ "$BISECT_QUICK" = 1 ]; then
+  if [ "$BISECT_QUICK" = 1 ] && [ "$BISECT_FAILED_HOOK" = desvio_verify ]; then
     printf "\n %sProbed with desvio_verify_quick, which is not the gate that failed. If\n" "$YEL"
     printf " that hook is STRICTER than desvio_verify, this verdict is about the\n"
     printf " hook and not about upstream.%s\n" "$OFF"

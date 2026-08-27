@@ -440,10 +440,13 @@ run_hook() {
 # rejected: an async subshell in a non-interactive shell ignores SIGINT, so
 # Ctrl-C during a five-minute typecheck would kill desvio and leave npm running.
 #
-# The subshell means a gate hook's variable assignments do not escape. Hooks
-# already communicate by file (stamp_write) and exit status, so that costs
-# nothing today — but it is the one way desvio_verify differs from the other
-# four hooks, and the next person to add a hook should know it.
+# The subshell means a hook's variable assignments do not escape it. Hooks
+# already communicate by file (stamp_write, as desvio_install does) and exit
+# status, so that costs nothing today — but it is the one way desvio_install,
+# desvio_seed, desvio_build and desvio_verify differ from run_hook's plain
+# call, and the next person to add a hook should know it. desvio_preflight is
+# the exception: it runs before assembly, so nothing it does can be a
+# branch's fault, and it still goes through run_hook.
 # shellcheck disable=SC2034  # GATE_STATUS is read by cmd-build.sh and bisect.sh
 run_gate() {
   local name="$1"

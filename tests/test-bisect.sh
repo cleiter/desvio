@@ -242,4 +242,70 @@ manifest aaa poison zzz
 run_desvio build --bisect-gate
 assert_contains "$OUT" "gate runs" "the budget is announced"
 
+# ---------------------------------------------------------------------------
+# desvio_build is caught and bisected the same way desvio_verify is — the
+# failure this whole file exists for now also happens before the gate ever
+# runs, and bisect_pipeline already treated a build failure as a probe
+# failure. This is the top-level build agreeing with it.
+BUILD_GATE='desvio_build() { if grep -rq BROKEN "$DESVIO_WORKTREE" --exclude-dir=.git; then return 1; fi; }'
+
+it "a failing desvio_build is bisected and names the branch that broke it"
+setup
+fixture_config "$BUILD_GATE"
+manifest aaa poison zzz
+run_desvio build --bisect-gate
+
+if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+assert_contains "$OUT" "the build failed" "the banner says build, not gate"
+assert_contains "$OUT" "poison broke the build" "it names the culprit, worded as a build break"
+assert_contains "$OUT" "after poison" "and the merge it fails at"
+assert_contains "$OUT" "fails on its own too" "it says the branch is broken alone"
+assert_not_contains "$OUT" "is ready" "no green banner"
+
+# ---------------------------------------------------------------------------
+# desvio_verify_quick stands in for desvio_verify — it has nothing to say about
+# a desvio_build failure, which the probe pipeline reruns unchanged. So the
+# "does the probe gate even see this" endpoint is skipped entirely rather than
+# asking a hook a question it was never meant to answer.
+it "desvio_verify_quick does not gate the endpoint probe when the build itself failed"
+setup
+fixture_config "$BUILD_GATE" "$QUICK"
+manifest aaa poison zzz
+run_desvio build --bisect-gate
+
+if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+# Not assert_not_contains "the full assembly" — the verdict's own closing line
+# ("The tree is back at the full assembly <oid>") contains that phrase too.
+# What must be absent is the PROBE line, which starts the line with it.
+if printf '%s\n' "$OUT" | grep -qE '^ +the full assembly( |$)'; then
+  fail "the substitution endpoint probe never runs" "found a 'the full assembly' probe line in:
+$OUT"
+else
+  ok "the substitution endpoint probe never runs"
+fi
+assert_not_contains "$OUT" "nothing to bisect with" "so it never refuses on the quick hook's account"
+assert_contains "$OUT" "poison broke the build" "and still reaches a verdict"
+# The quick hook is still what the SEARCH probes with — only the endpoint that
+# checks whether it can see this exact failure is the part that does not apply.
+assert_contains "$OUT" "probing with desvio_verify_quick" "the search itself still uses it"
+
+# ---------------------------------------------------------------------------
+# desvio_install that fails at every commit fails the base probe too, so the
+# honest verdict is "the base did", not an accusation against whichever
+# branch the search happened to be standing on.
+it "an install that fails everywhere blames the base, not a branch"
+setup
+fixture_config 'desvio_install() { return 1; }'
+manifest aaa poison zzz
+run_desvio build --bisect-gate
+
+if [ "$STATUS" -ne 0 ]; then ok "the build fails"; else fail "the build fails" "got 0"; fi
+assert_contains "$OUT" "the base did" "it blames the base"
+# Not `assert_not_contains "broke the build"` — the header is literally "no
+# branch of yours broke the build". What must be absent is a NAMED branch.
+assert_not_contains "$OUT" "aaa broke the build" "and accuses no branch"
+assert_not_contains "$OUT" "poison broke the build" "nor the poisoned one"
+assert_not_contains "$OUT" "zzz broke the build" "nor the last one"
+assert_not_contains "$OUT" "the manifest line" "and prints no accusation block"
+
 finish

@@ -19,9 +19,10 @@ usage: desvio build [<base>] [options]
   --assemble-only   merge, then stop. No install, no gate.
   --no-resolve      never call the agent; stop at the first conflict.
   --keep-going      report a failed branch and carry on with the rest.
-  --bisect-gate     when the gate fails, re-run it over the merge chain to find
-                    the branch that broke it. On a terminal desvio offers this
-                    anyway; the flag answers yes up front, for unattended runs.
+  --bisect-gate     when the build or the gate fails, re-run it over the merge
+                    chain to find the branch that broke it. On a terminal
+                    desvio offers this anyway; the flag answers yes up front,
+                    for unattended runs.
   --no-bisect-gate  never bisect, and never ask. Print the command instead.
   --forget <branch> ignore this branch's recorded rerere resolution and resolve
                     the conflict again from scratch. Repeatable. For when a
@@ -357,21 +358,35 @@ cmd_build() {
   # ---------- install, build, gate ----------
   # All four are the config's business. desvio does not know what this project
   # is written in, and guessing npm would be wrong more often than it is right.
-  if has_hook desvio_install; then
-    run_hook desvio_install
-  else
+  #
+  # install, seed and build run through run_gate too, not just desvio_verify. A
+  # tree that will not build has failed the gate as surely as one that fails
+  # typecheck — bisect_pipeline in lib/bisect.sh already treats all four as one
+  # unit for exactly that reason. Catching the failure here, not just there,
+  # means a broken desvio_build gets the same banner, suspect hint and bisect
+  # offer as a broken desvio_verify, instead of killing the script under
+  # set -e with nothing on screen but the tool's own output. See run_gate for
+  # why this cannot be spelled `run_hook desvio_build || GATE_STATUS=$?`.
+  if ! has_hook desvio_install; then
     warn "no desvio_install hook — skipping dependency install"
   fi
-  run_hook desvio_seed
-  run_hook desvio_build
+  local hook status
+  for hook in desvio_install desvio_seed desvio_build; do
+    has_hook "$hook" || continue
+    run_gate "$hook"
+    # Save it NOW, same reason as the gate below: GATE_STATUS is whatever the
+    # last thing run through run_gate returned, and a bisect probe run from
+    # inside build_failed would otherwise clobber it before this check fires.
+    status="$GATE_STATUS"
+    if [ "$status" -ne 0 ]; then
+      build_failed "$hook" "$status" "$base" "$do_bisect"
+      return "$status"
+    fi
+  done
 
   local gated="no gate configured — nothing verified this build"
   if has_hook desvio_verify; then
     log "gate: desvio_verify"
-    # run_gate, not run_hook: a failing gate must not kill the script HERE.
-    # Everything below — the attribution, the exit status, the hint — exists
-    # only because the failure is caught. See run_gate for why this cannot be
-    # spelled `run_hook desvio_verify || GATE_STATUS=$?`.
     run_gate desvio_verify
     # Save it NOW. Every bisect probe runs through run_gate too, so GATE_STATUS
     # by the end holds whatever the last probe returned — and the last probe is
@@ -379,22 +394,7 @@ cmd_build() {
     # failed, which is the one outcome none of this is allowed to produce.
     local gate_status="$GATE_STATUS"
     if [ "$gate_status" -ne 0 ]; then
-      # No build_summary on this path. Its first line is "$DESVIO_NAME is
-      # ready", and a green banner over a build that failed its gate is the
-      # exact lie the gate exists to prevent.
-      gate_failed_banner "$gate_status"
-      # Ask only once the banner is on screen: the question is "now that you
-      # have seen THIS, do you want to know which branch", and it has to be
-      # answerable with no. `ask` with nobody to ask resolves to no.
-      if [ "$do_bisect" = ask ]; then
-        do_bisect=0
-        if interactive && bisect_ask; then do_bisect=1; fi
-      fi
-      if [ "$do_bisect" = 1 ]; then
-        bisect_gate "$base"
-      else
-        gate_failed_hint
-      fi
+      build_failed desvio_verify "$gate_status" "$base" "$do_bisect"
       # The gate's own status, unchanged. `desvio build` exiting with the code
       # your gate exited with is what CI reads, and tests/test-assembly.sh
       # pins it at 3.
@@ -409,6 +409,35 @@ cmd_build() {
 
   build_summary "$started_at" "$base_ref" "$base" "$base_subject" "$base_when" \
     "$base_behind" "$gated"
+}
+
+# build_failed <hook> <status> <base> <do_bisect>
+#
+# One failure path for all four hooks — install, seed, build, verify — so it is
+# not written four times. No build_summary follows any of these: its first line
+# is "$DESVIO_NAME is ready", and a green banner over a build whose hook failed
+# is the exact lie the gate exists to prevent.
+#
+# BRANCHES/OIDS/NOTES/MERGES reach bisect_gate through bash's dynamic scoping,
+# the same way build_summary already reads them — both are called from inside
+# cmd_build, after the loop that populates them.
+build_failed() {
+  local hook="$1" status="$2" base="$3" do_bisect="$4"
+  gate_failed_banner "$hook" "$status"
+  # Ask only once the banner is on screen: the question is "now that you have
+  # seen THIS, do you want to know which branch", and it has to be answerable
+  # with no. `ask` with nobody to ask resolves to no.
+  if [ "$do_bisect" = ask ]; then
+    do_bisect=0
+    if interactive && bisect_ask "$hook"; then do_bisect=1; fi
+  fi
+  if [ "$do_bisect" = 1 ]; then
+    # shellcheck disable=SC2034  # read by bisect.sh's verdicts, a different file
+    BISECT_FAILED_HOOK="$hook"
+    bisect_gate "$base"
+  else
+    gate_failed_hint "$hook"
+  fi
 }
 
 # ---------- manifest ----------
