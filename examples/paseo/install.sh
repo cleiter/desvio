@@ -9,7 +9,7 @@
 #
 # Usage:  desvio run install
 # Env:    PASEO_APP_DEST=/Applications
-#         PASEO_PRODUCT_NAME="Paseo Mine"
+#         PASEO_PRODUCT_NAME="Paseo Plus"
 #         PASEO_USER_DATA="$HOME/Library/Application Support/Paseo"
 #
 set -euo pipefail
@@ -79,6 +79,49 @@ VERSION=$(plutil -extract CFBundleShortVersionString raw "$BUILT_APP/Contents/In
 if pgrep -f "$DEST_DIR/$APP_NAME/Contents/MacOS/Paseo" >/dev/null 2>&1; then
   die "$PRODUCT_NAME is running from $DEST_DIR. Quit it first — replacing a
   running bundle leaves the live process reading files that no longer exist."
+fi
+
+# The app quit does not mean its daemon did. keepRunningAfterQuit — pinned by
+# this very script, further down — reparents the supervisor to launchd, so it
+# keeps serving from inside the bundle this is about to replace. It also
+# rewrites its own argv to "Paseo Daemon" once it is up (process.title in
+# supervisor-entrypoint.ts), so the pgrep check above never catches it — only
+# the pidfile does. The packaged app always uses the real ~/.paseo, regardless
+# of PASEO_REAL_HOME — that only governs the dev daemon `desvio run start` uses.
+DPIDFILE="$HOME/.paseo/paseo.pid"
+if [ -f "$DPIDFILE" ]; then
+  DPID=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$DPIDFILE" | head -1)
+  if [ -n "${DPID:-}" ] && kill -0 "$DPID" 2>/dev/null; then
+    # -a: lsof ORs selection types without it, matching any process's txt
+    # mapping rather than just this pid's — see the cwd lookup below for the
+    # idiom done right.
+    DTXT=$(lsof -a -p "$DPID" -d txt -Fn 2>/dev/null | sed -n 's/^n//p')
+    # A herestring, not a pipe: `| grep -qF` under `set -o pipefail` can report
+    # failure on a MATCH — grep exits on the first line and SIGPIPEs lsof, and
+    # pipefail then reports the pipeline's status as that SIGPIPE, not the match.
+    if grep -qF "$DEST_DIR/$APP_NAME/" <<<"$DTXT"; then
+      die "the daemon this app installed (pid $DPID) is still running from
+    $DEST_DIR/$APP_NAME
+  Quitting the window leaves it up — keepRunningAfterQuit is on, by this script.
+  Replacing the bundle underneath it leaves it reading files that are gone, and
+  it holds every agent it started. Stop it first, with either:
+
+    desvio run stop
+    PASEO_HOME=$HOME/.paseo $BUILD_DIR/packages/cli/bin/paseo daemon stop"
+    fi
+  fi
+fi
+
+# A stock Paseo.app already here means the settings pin below reaches it too:
+# manageBuiltInDaemon and keepRunningAfterQuit are pinned in the shared
+# desktop-settings.json (see USER_DATA above), not in a directory keyed to this
+# bundle's name. A reader who only asked to install $PRODUCT_NAME gets the
+# other bundle's daemon behaviour quietly changed as a side effect.
+if [ "$PRODUCT_NAME" != "Paseo" ] && [ -d "$DEST_DIR/Paseo.app" ]; then
+  warn "$DEST_DIR/Paseo.app is also installed. It reads the same
+         $USER_DATA/desktop-settings.json this script is about to pin
+         manageBuiltInDaemon and keepRunningAfterQuit into — both bundles will
+         run their own background daemon and keep it up after you quit the window."
 fi
 
 # A daemon started from the tree owns port 6767 and would block the app's own.

@@ -7,9 +7,11 @@
 # copy should not cost a five-minute rebuild.
 #
 # Usage:  desvio run package
-# Env:    PASEO_PACKAGE_VERSION=1.2.3  PASEO_FORK_NAME=mine
-#         PASEO_PRODUCT_NAME="Paseo Mine"   name the bundle, to sit beside a stock
+# Env:    PASEO_PACKAGE_VERSION=1.2.3  PASEO_FORK_NAME=plus
+#         PASEO_PRODUCT_NAME="Paseo Plus"   name the bundle, to sit beside a stock
 #                                           install rather than replace it
+#         PASEO_LOGO_PLUS=0|1|auto           badge the icon with a plus; auto (the
+#                                           default) means whenever it is renamed
 #
 # Run `desvio build` FIRST. This packages whatever is in the tree; it does not
 # assemble branches, and it does not check whether your gate ever passed.
@@ -64,7 +66,7 @@ fi
 
 # Version: upstream's, with this build marked as a prerelease of it.
 #
-#   0.4.0-mine.260814-0646
+#   0.4.0-plus.260814-0646
 #   ^^^^^ upstream base   ^^^^^^^^^^^^ whose build, and when
 #
 # Same shape as upstream's own `0.4.0-beta.2`: a dot after the name, exactly like
@@ -75,19 +77,20 @@ fi
 # Precedence: this ranks BELOW upstream's stable release of the same number,
 # because every prerelease loses to its own release. That is only safe because
 # the bundled updater cannot run at all — see the app-update.yml check below.
-FORK_NAME="${PASEO_FORK_NAME:-${DESVIO_BRANCH:-mine}}"
+FORK_NAME="${PASEO_FORK_NAME:-${DESVIO_BRANCH:-plus}}"
 UPSTREAM_VERSION=$(node -p "require('$BUILD_DIR/package.json').version" 2>/dev/null || echo "0.0.0")
 BUILD_STAMP=$(date '+%y%m%d-%H%M')
 VERSION="${PASEO_PACKAGE_VERSION:-$UPSTREAM_VERSION-$FORK_NAME.$BUILD_STAMP}"
 
 for arg in "$@"; do
   case "$arg" in
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) printf 'unknown option: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
 
 log(){  printf '\n\033[1;34m[pkg]\033[0m %s\n' "$*"; }
+warn(){ printf '\033[1;33m[pkg]\033[0m %s\n' "$*"; }
 die(){  printf '\n\033[1;31m[pkg] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # The product name becomes a path component, and further down it becomes the
@@ -131,12 +134,19 @@ STAMPED_MANIFESTS=(packages/app/package.json packages/server/package.json)
 # versionCode or iOS buildNumber it derives. Its pattern accepts `X.Y.Z` and
 # `X.Y.Z-beta.N` and nothing else, so a stamped fork version aborts the export:
 #
-#   Cannot derive native release version from unsupported version: 0.4.0-mine.…
+#   Cannot derive native release version from unsupported version: 0.4.0-plus.…
 #
 # No version string satisfies both that and semver's prerelease rules —
 # `-beta.260814` parses there but then fails its own 1..998 beta-number check.
 # So widen the pattern in the tree instead and restore it with the manifests.
 VERSION_PATTERN_FILE=packages/app/native-release-version.js
+
+# logo-plus rewrites the desktop icons in place, further down. Restored with the
+# manifests and for the same reason: the tree is disposable, but a build that
+# stopped halfway should not leave a badged icon behind for the next one to badge
+# again. Added to RESTORED_FILES below, only when badging actually runs — a run
+# with PASEO_LOGO_PLUS=0 never touched this directory and has nothing to restore.
+ICON_ASSET_DIR=packages/desktop/assets
 RESTORED_FILES=("${STAMPED_MANIFESTS[@]}" "$VERSION_PATTERN_FILE")
 
 restore_manifests() {
@@ -166,6 +176,42 @@ node -e '
   }
   fs.writeFileSync(file, source.replace(from, to));
 ' "$BUILD_DIR/$VERSION_PATTERN_FILE" || die "could not widen the native version pattern"
+
+# ---------- the plus ----------
+# "Paseo Plus" wants an icon that says so, or the two bundles in /Applications
+# are told apart only by their name. logo-plus draws a superscript plus into
+# the top-right of every render in assets/ — the .icns the bundle wears and the
+# icon.png electron-builder copies to Resources/ for the window and the dock.
+#
+# Before the build, not after: electron-builder reads these files, and patching
+# the packed bundle afterwards would mean re-signing it a second time and
+# fighting macOS's icon cache for the copy Finder already remembered.
+#
+# Default `auto` — on exactly when the bundle is renamed. A build that still
+# calls itself Paseo is replacing the stock app, and badging that one leaves you
+# unable to tell a fork build from the real thing.
+LOGO_PLUS="${PASEO_LOGO_PLUS:-auto}"
+if [ "$LOGO_PLUS" = "auto" ]; then
+  [ "$PRODUCT_NAME" != "Paseo" ] && LOGO_PLUS=1 || LOGO_PLUS=0
+fi
+if [ "$LOGO_PLUS" = "1" ]; then
+  if command -v magick >/dev/null 2>&1; then
+    RESTORED_FILES+=("$ICON_ASSET_DIR")
+    "$(dirname "$DESVIO_CONFIG_FILE")/logo-plus" "$BUILD_DIR" \
+      || die "could not badge the icon. Set PASEO_LOGO_PLUS=0 to package with the
+  stock icon instead."
+  elif [ "${PASEO_LOGO_PLUS:-}" = "1" ]; then
+    # Asked for explicitly — silently shipping the stock icon would answer a
+    # direct request with the wrong bundle, and say nothing about it.
+    die "ImageMagick is not installed — brew install imagemagick
+  Or unset PASEO_LOGO_PLUS (or set it to 0) to package with the stock icon."
+  else
+    # auto resolved to "badge it", but there is nothing to badge with. Degrade
+    # rather than fail the whole build over an optional icon.
+    warn "ImageMagick is not installed — packaging with the stock icon.
+       brew install imagemagick to badge it, or set PASEO_LOGO_PLUS=0 to silence this."
+  fi
+fi
 
 # ---------- build ----------
 # The root `npm run build:desktop` wrapper is not usable: its `cd packages/app`
@@ -206,6 +252,47 @@ if [ "$PACKED_APP" != "$BUILT_APP" ]; then
   log "renaming the bundle to $APP_NAME"
   rm -rf "${BUILT_APP:?}"
   mv "$PACKED_APP" "$BUILT_APP"
+fi
+
+# ---------- the helper the daemon runs from ----------
+# packages/desktop/src/daemon/runtime-paths.ts spawns the supervisor from
+#
+#   const name = path.basename(process.execPath);            // "Paseo"
+#   <bundle>/Contents/Frameworks/${name} Helper.app/Contents/MacOS/${name} Helper
+#
+# and falls back to process.execPath — the app's OWN binary — when that path does
+# not exist. The two are not interchangeable. The helper is LSUIElement with its
+# own bundle id; the app binary is not, so a daemon spawned from it checks in to
+# LaunchServices as a foreground instance of this app. With keepRunningAfterQuit
+# on it then OUTLIVES the window: the Dock tile activates a process that has no
+# window and reports "the application is not open anymore", and install.sh's
+# running-app check matches the daemon and tells you to quit what you just quit.
+#
+# The rename is what misses. electron-builder derives the helper name from
+# productName ("Paseo Plus Helper"), executableName stays "Paseo", and the
+# lookup is built from the executable. A stock build never notices. Same bug,
+# upstream: electron-userland/electron-builder#6962 ("Unable to find helper app
+# when productName and executableName are set to different names") — check
+# whether it still needs a workaround before assuming this one always will.
+#
+# A copy, not a symlink: the tested path names the executable INSIDE the bundle,
+# so that has to match too. 228K, and the re-sign below covers it.
+if [ "$PRODUCT_NAME" != "Paseo" ]; then
+  SRC_HELPER="$BUILT_APP/Contents/Frameworks/$PRODUCT_NAME Helper.app"
+  DAEMON_HELPER="$BUILT_APP/Contents/Frameworks/Paseo Helper.app"
+  [ -d "$SRC_HELPER" ] || die "no helper bundle at $SRC_HELPER
+  electron-builder names it after productName; if that changed, this rename has
+  to change with it or the daemon silently runs from the app binary again."
+  log "adding Paseo Helper.app for the daemon"
+  rm -rf "${DAEMON_HELPER:?}"
+  cp -Rc "$SRC_HELPER" "$DAEMON_HELPER" 2>/dev/null || cp -R "$SRC_HELPER" "$DAEMON_HELPER"
+  mv "$DAEMON_HELPER/Contents/MacOS/$PRODUCT_NAME Helper" "$DAEMON_HELPER/Contents/MacOS/Paseo Helper"
+  # Its own id: two bundles claiming ...helper is the ambiguity the appId rename
+  # above exists to avoid. LSUIElement is inherited from the copy — that is the
+  # property that keeps the daemon out of the Dock.
+  plutil -replace CFBundleExecutable -string "Paseo Helper" "$DAEMON_HELPER/Contents/Info.plist"
+  plutil -replace CFBundleName       -string "Paseo Helper" "$DAEMON_HELPER/Contents/Info.plist"
+  plutil -replace CFBundleIdentifier -string "$APP_ID.helper.daemon" "$DAEMON_HELPER/Contents/Info.plist"
 fi
 
 # ---------- disarm the updater ----------

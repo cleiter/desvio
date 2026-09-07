@@ -52,8 +52,12 @@ lint_status=0
 if [ "$lint" = 1 ]; then
   # The list is a literal rather than a find: every shell file in this repo is
   # in one of these four places, and a glob that quietly stops matching is worse
-  # than one a reader can check against `ls`.
+  # than one a reader can check against `ls`. logo-plus is named explicitly: it
+  # has no .sh so the *.sh globs miss it, on purpose — see its own header for
+  # why. The *.conf pair is bash too (lib/common.sh sources it directly), and a
+  # syntax error in either breaks every desvio command run from that directory.
   sources=("$ROOT/bin/desvio" "$ROOT"/lib/*.sh "$ROOT"/examples/paseo/*.sh \
+           "$ROOT/examples/paseo/logo-plus" "$ROOT"/examples/paseo/*.conf \
            "$ROOT"/tests/*.sh "$ROOT/tests/lib/harness.sh")
 
   printf '\nlint\n'
@@ -82,6 +86,32 @@ if [ "$lint" = 1 ]; then
   else
     printf '  SKIP  shellcheck is not installed — CI runs it and will fail on\n'
     printf '        anything it finds. brew install shellcheck\n'
+  fi
+
+  # cmd-run.sh:108 dies on a task that lost its executable bit, and the two new
+  # files here arrived by copy from outside the repo — exactly how a 100644
+  # gets committed with the rest of lint still green. Checked against the
+  # INDEX, not the filesystem: a local chmod +x that was never committed is the
+  # case that actually ships.
+  mode_status=0
+  check_mode() {
+    local want="$1" path="$2" got
+    got=$(git -C "$ROOT" ls-files -s "$path" | awk '{print $1}')
+    if [ "$got" != "$want" ]; then
+      printf '  FAIL  %s is %s, want %s\n' "$path" "${got:-<not tracked>}" "$want"
+      mode_status=1
+    fi
+  }
+  for f in install.sh package.sh start.sh desktop.sh stop.sh logo-plus; do
+    check_mode 100755 "examples/paseo/$f"
+  done
+  for f in desvio.conf paseo.conf manifest.txt README.md; do
+    check_mode 100644 "examples/paseo/$f"
+  done
+  if [ "$mode_status" = 0 ]; then
+    printf '  ok    file modes — executable where cmd-run.sh needs it, plain elsewhere\n'
+  else
+    lint_status=1
   fi
 fi
 [ "$only_lint" = 0 ] || exit "$lint_status"

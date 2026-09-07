@@ -40,7 +40,7 @@ Every run does the same thing: fetch upstream, recreate the integration branch f
 
 ```
 ────────────────────────────────────────────────────────────────────
- paseo-mine is ready   2026-08-14 07:50
+ paseo-plus is ready   2026-08-14 07:50
 ────────────────────────────────────────────────────────────────────
 
  starting from
@@ -60,7 +60,7 @@ Every run does the same thing: fetch upstream, recreate the integration branch f
        its own commits are in origin/main, up to 7c41a90e2 keep the plan card…
 
  built as
-   paseo-mine     a56070fc1
+   paseo-plus     a56070fc1
                   /Users/me/.myproject-build/build-tree
                   gate passed: desvio_verify
 ────────────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ CI runs the suite on Linux and macOS, and on macOS a second time with `/bin/bash
 
 ## Example
 
-[`examples/paseo`](examples/paseo) is a complete working configuration for [Paseo](https://github.com/getpaseo/paseo) — preflight against a running daemon, npm install gated on the lockfile, a generated-types seed, typecheck and lint as the gate — plus the scripts that run and package what comes out.
+[`examples/paseo`](examples/paseo) is a complete working configuration for [Paseo](https://github.com/getpaseo/paseo) — preflight against a running daemon, npm install gated on the lockfile, a generated-types seed, typecheck and lint as the gate — plus the scripts that run, package, install and tear down what comes out.
 
 ## Licence
 

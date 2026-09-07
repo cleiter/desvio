@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+#
+# Badge the Paseo app icon with a superscript plus — the "Paseo Plus" mark.
+#
+# Runs in place, inside the build tree. package.sh calls this after the version
+# stamp and before electron-builder, so the bundle picks the badged icons up the
+# same way it picks up the stock ones; the tree is a git checkout, and
+# package.sh's restore trap puts the originals back on the way out.
+#
+# No .sh on purpose: `desvio run` publishes every *.sh beside the config as a
+# task (lib/cmd-run.sh), and this has exactly one legitimate caller, package.sh.
+# Run it directly — `./logo-plus <build-tree>` or `./logo-plus --preview` below.
+#
+# Usage:  ./logo-plus <build-tree>          badge packages/desktop/assets
+#         ./logo-plus --preview <out.png>   render one 512px preview, no build
+# Env:    PASEO_LOGO_PLUS=0                    package.sh reads this, not us
+#
+# Needs ImageMagick (`magick`) and, for the .icns, macOS `iconutil`.
+set -euo pipefail
+
+# --- where the plus goes -----------------------------------------------------
+# Fractions of the ART BOX, not of the canvas: macOS icon sizes do not share a
+# padding ratio. The 512 and 256 renders sit inside ~5% of margin, 128 has 4%,
+# 64 has one pixel, and 32 and 16 are drawn full bleed. Placing the plus at a
+# fixed fraction of the canvas would walk it off the black square at the small
+# sizes. Every file is measured for itself, below.
+#
+# The top-right corner is the only quadrant the butterfly leaves empty, which is
+# also where a superscript plus belongs. Bottom-left reads as empty at a glance
+# but the loop's tail runs through it.
+PLUS_CX=0.8487   # centre, across the art box
+PLUS_CY=0.1579   # centre, down the art box
+PLUS_ARM=0.0965  # half-length of each bar
+PLUS_TH=0.0570   # bar thickness — a shade under the butterfly's stroke
+
+# Below this the plus is under two pixels wide and composites to a grey smudge
+# that reads as a dirty icon rather than a different one. The 16px and 32px
+# renders keep the stock mark; nothing distinguishes them at that size anyway.
+MIN_SIZE=48
+
+ASSET_DIR_REL="packages/desktop/assets"
+
+log(){ printf '\033[1;34m[logo]\033[0m %s\n' "$*"; }
+die(){ printf '\n\033[1;31m[logo] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+command -v magick >/dev/null 2>&1 || die "ImageMagick is not installed — brew install imagemagick
+  Or set PASEO_LOGO_PLUS=0 to package with the stock icon."
+
+# Composite the plus onto one PNG, sized and placed from that file's own art box.
+# `%@` on the alpha channel is the bounding box of everything non-transparent,
+# as WxH+X+Y — the black square, in other words.
+badge_png() {
+  local file=$1 geom size
+  geom=$(magick "$file" -alpha extract -threshold 1 -format '%@' info:)
+  size=$(magick "$file" -format '%w' info:)
+  [ "$size" -ge "$MIN_SIZE" ] || { log "  $(basename "$file") — ${size}px, left stock"; return 0; }
+
+  # roundrectangle wants corners, so hand awk the box and let it do the floats.
+  local draw
+  draw=$(printf '%s' "$geom" | awk -F'[x+]' -v cx="$PLUS_CX" -v cy="$PLUS_CY" \
+                                          -v arm="$PLUS_ARM" -v th="$PLUS_TH" '{
+    bw=$1; bh=$2; bx=$3; by=$4
+    x = bx + cx*bw; y = by + cy*bh
+    a = arm*bw; t = th*bw; r = t/2
+    printf "roundrectangle %.2f,%.2f %.2f,%.2f %.2f,%.2f ", x-a, y-r, x+a, y+r, r, r
+    printf "roundrectangle %.2f,%.2f %.2f,%.2f %.2f,%.2f",  x-r, y-a, x+r, y+a, r, r
+  }')
+
+  # Draw into a transparent overlay and composite, rather than drawing onto the
+  # icon: -draw on a paletted PNG quantises the antialiased edge to whatever is
+  # already in the palette, and the plus comes out with jagged shoulders.
+  local tmp="$file.plus.png"
+  magick -size "${size}x${size}" xc:none -fill white -draw "$draw" "$tmp"
+  magick "$file" "$tmp" -composite "$file.badged.png"
+  rm -f "$tmp"
+  mv "$file.badged.png" "$file"
+  log "  $(basename "$file") — ${size}px"
+}
+
+# --- preview -----------------------------------------------------------------
+if [ "${1:-}" = "--preview" ]; then
+  out=${2:?usage: ./logo-plus --preview <out.png>}
+  src="${PASEO_LOGO_SRC:-$(dirname "$0")/build-tree/$ASSET_DIR_REL/icon.png}"
+  [ -f "$src" ] || die "no icon to preview at $src"
+  cp "$src" "$out"
+  badge_png "$out"
+  log "wrote $out"
+  exit 0
+fi
+
+# --- badge the tree ----------------------------------------------------------
+BUILD_DIR=${1:?usage: ./logo-plus <build-tree>}
+ASSETS="$BUILD_DIR/$ASSET_DIR_REL"
+[ -d "$ASSETS" ] || die "no desktop assets at $ASSETS"
+
+# Badging a badged icon stacks a second plus on the first. package.sh always
+# hands us a restored tree, so a dirty asset means this already ran — say so
+# instead of quietly drawing twice.
+if git -C "$BUILD_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$BUILD_DIR" diff --quiet -- "$ASSET_DIR_REL" 2>/dev/null \
+    || die "$ASSET_DIR_REL is already modified — the icons are badged, or you
+  changed them. Restore first:  git -C $BUILD_DIR checkout -- $ASSET_DIR_REL"
+fi
+
+log "badging the icon with a plus"
+
+# The .icns is the bundle's icon; icon.png is what electron-builder copies to
+# Resources/ for the window and the dock. The linux pngs and the .ico are not
+# built by package.sh (-c.mac.target=dir), but leaving them stock would mean a
+# Linux or Windows build off this tree quietly ships an unbadged mark.
+for f in icon.png icon-dev.png 32x32.png 64x64.png 128x128.png "128x128@2x.png"; do
+  [ -f "$ASSETS/$f" ] && badge_png "$ASSETS/$f"
+done
+
+# .icns holds ten renders from 16px to 1024px. Unpack, badge each, repack —
+# iconutil is the only thing that writes the format, and it round-trips cleanly.
+if [ -f "$ASSETS/icon.icns" ]; then
+  command -v iconutil >/dev/null 2>&1 || die "no iconutil — this needs macOS"
+  ICONSET=$(mktemp -d)/icon.iconset
+  iconutil -c iconset -o "$ICONSET" "$ASSETS/icon.icns"
+  for f in "$ICONSET"/*.png; do badge_png "$f"; done
+  iconutil -c icns -o "$ASSETS/icon.icns" "$ICONSET"
+  rm -rf "$(dirname "$ICONSET")"
+  log "  icon.icns — repacked"
+fi
+
+# .ico frames are 16 to 256; magick reassembles them in one pass. The frame
+# order is not the order they came out in, and Windows does not care.
+if [ -f "$ASSETS/icon.ico" ]; then
+  ICODIR=$(mktemp -d)
+  magick "$ASSETS/icon.ico" "$ICODIR/frame-%02d.png"
+  for f in "$ICODIR"/frame-*.png; do badge_png "$f"; done
+  magick "$ICODIR"/frame-*.png "$ASSETS/icon.ico"
+  rm -rf "$ICODIR"
+  log "  icon.ico — repacked"
+fi
