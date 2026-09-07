@@ -88,6 +88,16 @@ alive_of() {
 
 describe() { ps -o command= -p "$1" 2>/dev/null | cut -c1-100 || true; }
 
+# bash 3.2 — macOS's system bash, and the version this script must parse
+# under (tests/run.sh lints it with `bash -n`) — cannot parse a `case`
+# statement inside `$(...)` command substitution: it errors on the first
+# `;;` regardless of how the case is laid out. Both matches below build
+# their answer inside one, so each goes through a function instead — the
+# function body is parsed on its own, and only a call to it appears inside
+# the substitution.
+is_helper() { case "$(describe "$1")" in *Helper*) return 0 ;; *) return 1 ;; esac; }
+pid_in_self() { case "$SELF" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
 # SIGTERM, then SIGKILL for whatever ignored it. Returns 0 even when nothing was
 # there, so a caller can run it unconditionally.
 term_then_kill() {
@@ -144,7 +154,7 @@ fi
 
 # The app bundles. Main processes only — the Helper children die with them.
 APP_PIDS=$(pgrep -f 'Contents/MacOS/Paseo' 2>/dev/null | while read -r p; do
-  case "$(describe "$p")" in *Helper*) ;; *) printf '%s ' "$p" ;; esac
+  is_helper "$p" || printf '%s ' "$p"
 done || true)
 
 # Metro, Electron and npm from `desvio run desktop`, which outlive a ^C often
@@ -162,7 +172,7 @@ fi
 # Never include ourselves in a sweep: this script and its own children (pgrep,
 # ps) match the tree path too.
 SELF=" $(ancestors $$) $$ "
-DEV_PIDS=$(for p in $DEV_PIDS; do case "$SELF" in *" $p "*) ;; *) printf '%s ' "$p" ;; esac; done)
+DEV_PIDS=$(for p in $DEV_PIDS; do pid_in_self "$p" || printf '%s ' "$p"; done)
 
 # Daemon pids, and the agent trees underneath them. Collected BEFORE anything is
 # stopped: once the daemon dies its children reparent to launchd and there is
