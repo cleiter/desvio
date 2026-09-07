@@ -85,9 +85,26 @@ spawn_one() {
   ALL_TEST_PIDS+=("$PID")
 }
 
-# spawn_tree — a real two-level tree: MID (a backgrounded script, child of
-# THIS process) which itself backgrounds LEAF (child of MID, grandchild of
-# this process). Sets MID_PID and LEAF_PID.
+# spawn_tree — a real three-level tree: ROOT (a backgrounded script, child of
+# THIS process) backgrounds MID, which backgrounds LEAF. Sets ROOT_PID,
+# MID_PID and LEAF_PID.
+#
+# descendants() is always read through a command substitution, here and in
+# stop.sh alike, so it runs the whole BFS inside a subshell of its caller.
+# Querying descendants() of $$ itself (or of any of $$'s own ancestors) is
+# self-referential: that computing subshell is really and currently a child
+# of $$, and pgrep -P $$ will honestly report it — then, at the next BFS
+# level, it recurses into ITS OWN in-flight `pgrep ... || true` wrapper
+# process, since `||` keeps that wrapper alive as a real, if transient, child
+# of the subshell for exactly as long as the query takes. The result is a
+# phantom branch that only exists because it was asked about, and how much of
+# it survives to be seen is a pure timing race — it reproduced on every run
+# under Linux/glibc pgrep, and not once under macOS/BSD pgrep. stop.sh itself
+# never triggers this: it only ever calls descendants() on a daemon pid, never
+# on itself or an ancestor. So the fix here is not to descendants() but to the
+# tree: root it one level below $$, at ROOT (a plain descendant, not an
+# ancestor, of the subshell that computes the answer), which is exactly the
+# shape stop.sh's own calls have.
 spawn_tree() {
   TREE_DIR="$TEST_TMP/tree"; mkdir -p "$TREE_DIR"
   cat > "$TREE_DIR/leaf.sh" <<'EOF'
@@ -100,12 +117,22 @@ EOF
 echo \$! > "$TREE_DIR/leaf.pid"
 wait
 EOF
-  chmod +x "$TREE_DIR/leaf.sh" "$TREE_DIR/mid.sh"
-  "$TREE_DIR/mid.sh" &
-  MID_PID=$!
-  ALL_TEST_PIDS+=("$MID_PID")
-  # Wait for the pidfile rather than a fixed sleep — not a race against how
+  cat > "$TREE_DIR/root.sh" <<EOF
+#!/usr/bin/env bash
+"$TREE_DIR/mid.sh" &
+echo \$! > "$TREE_DIR/mid.pid"
+wait
+EOF
+  chmod +x "$TREE_DIR/leaf.sh" "$TREE_DIR/mid.sh" "$TREE_DIR/root.sh"
+  "$TREE_DIR/root.sh" &
+  ROOT_PID=$!
+  ALL_TEST_PIDS+=("$ROOT_PID")
+  # Wait for each pidfile rather than a fixed sleep — not a race against how
   # fast the fork happens on a loaded machine.
+  for _ in $(seq 1 50); do [ -f "$TREE_DIR/mid.pid" ] && break; sleep 0.1; done
+  MID_PID=$(cat "$TREE_DIR/mid.pid" 2>/dev/null || true)
+  [ -n "${MID_PID:-}" ] || { printf 'mid process never started\n' >&2; exit 2; }
+  ALL_TEST_PIDS+=("$MID_PID")
   for _ in $(seq 1 50); do [ -f "$TREE_DIR/leaf.pid" ] && break; sleep 0.1; done
   LEAF_PID=$(cat "$TREE_DIR/leaf.pid" 2>/dev/null || true)
   [ -n "${LEAF_PID:-}" ] || { printf 'leaf process never started\n' >&2; exit 2; }
@@ -113,8 +140,8 @@ EOF
 }
 
 reap_tree() {
-  kill -KILL "$LEAF_PID" "$MID_PID" 2>/dev/null || true
-  wait "$MID_PID" 2>/dev/null || true
+  kill -KILL "$LEAF_PID" "$MID_PID" "$ROOT_PID" 2>/dev/null || true
+  wait "$ROOT_PID" 2>/dev/null || true
 }
 
 wait_gone() {
@@ -126,7 +153,7 @@ wait_gone() {
 it "descendants() finds a whole tree breadth first"
 fixture_new
 spawn_tree
-got="$(descendants "$$")"
+got="$(descendants "$ROOT_PID")"
 assert_has_pid "$got" "$MID_PID" "the direct child is found"
 assert_has_pid "$got" "$LEAF_PID" "the grandchild is found too"
 assert_contains "$got" "$MID_PID $LEAF_PID" "the child comes before the grandchild"
