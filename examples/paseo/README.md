@@ -18,7 +18,7 @@ Two config files, and the split is deliberate. **`desvio.conf`** is desvio's, an
 
 | Hook | |
 |---|---|
-| `desvio_preflight` | refuses to build while a daemon serves the build tree — rebuilding rewrites `dist/` under a process that lazily requires from it |
+| `desvio_preflight` | refuses to build while a daemon serves the build tree — rebuilding rewrites `dist/` under a process that lazily requires from it. Also refuses if a daemon is running but its tree can't be determined (needs `/proc` or `lsof`), rather than assume it is safe |
 | `desvio_install` | `npm ci`, skipped when `package-lock.json` has not moved |
 | `desvio_seed` | copies `packages/app/.expo/types/router.d.ts` from your checkout. Expo generates it, git ignores it, and without it the app's typecheck fails for reasons unrelated to your branches |
 | `desvio_verify` | `npm run typecheck` and `npm run lint` |

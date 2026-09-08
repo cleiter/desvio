@@ -59,6 +59,17 @@ run_cli(){ PASEO_HOME="$REAL_HOME" "$PASEO" "$@"; }
 # has to be a prefix test.
 serves_build_tree(){ case "${1:-}" in "$BUILD_DIR"|"$BUILD_DIR"/*) return 0 ;; *) return 1 ;; esac; }
 
+# /proc first, lsof as the fallback — duplicated in desvio.conf, see the
+# comment above desvio_preflight there for why it is not a shared source.
+paseo_daemon_cwd() {
+  local pid="$1" cwd=""
+  if [ -e /proc/self/cwd ]; then
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+  fi
+  [ -n "$cwd" ] || cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  printf '%s' "${cwd% (deleted)}"
+}
+
 # ---------- preflight ----------
 [ -d "$BUILD_DIR" ] || die "no build tree at $BUILD_DIR — run desvio build first"
 [ -f "$BUILD_DIR/packages/server/dist/scripts/supervisor-entrypoint.js" ] ||
@@ -71,12 +82,21 @@ HEAD_BRANCH=$(git -C "$BUILD_DIR" rev-parse --abbrev-ref HEAD)
 
 # Which tree is serving right now? If it is already this one, there is nothing to
 # swap and stopping would kill agents for no reason.
+#
+# CURRENT_PID and CURRENT_CWD mean different things and both are needed: PID is
+# "a daemon is live" — the thing that decides whether to prompt and whether to
+# stop it — CWD is "and we know which tree it serves". Collapsing them into one
+# variable is the bug this file used to have: a daemon whose cwd could not be
+# determined read as "not running" and start.sh swapped straight past it,
+# starting a second daemon on a port the first one still held.
+CURRENT_PID=""
 CURRENT_CWD=""
 PIDFILE="$REAL_HOME/paseo.pid"
 if [ -f "$PIDFILE" ]; then
   DPID=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$PIDFILE" | head -1)
   if [ -n "${DPID:-}" ] && kill -0 "$DPID" 2>/dev/null; then
-    CURRENT_CWD=$(lsof -a -p "$DPID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    CURRENT_PID="$DPID"
+    CURRENT_CWD=$(paseo_daemon_cwd "$DPID")
   fi
 fi
 
@@ -87,12 +107,20 @@ if [ -n "${CURRENT_CWD:-}" ] && serves_build_tree "$CURRENT_CWD"; then
 fi
 
 log "swapping the daemon on $REAL_HOME"
-printf '       from: %s\n' "${CURRENT_CWD:-<not running>}"
+if [ -n "${CURRENT_CWD:-}" ]; then
+  printf '       from: %s\n' "$CURRENT_CWD"
+elif [ -n "${CURRENT_PID:-}" ]; then
+  printf '       from: unknown tree (pid %s — no /proc, no lsof)\n' "$CURRENT_PID"
+else
+  printf '       from: <not running>\n'
+fi
 printf '       to:   %s\n' "$BUILD_DIR"
 
 # ---------- who is about to be killed ----------
+# Gated on CURRENT_PID, not CURRENT_CWD: the daemon answers the CLI whether or
+# not we could resolve its tree, and it is about to be stopped either way.
 LIVE=""
-if [ -n "${CURRENT_CWD:-}" ]; then
+if [ -n "${CURRENT_PID:-}" ]; then
   LIVE=$(run_cli ls -g --json 2>/dev/null |
     python3 -c 'import json,sys
 try: rows = json.load(sys.stdin)
@@ -109,14 +137,17 @@ if [ -n "$LIVE" ]; then
   warn "If one of them is the agent reading this, it kills itself. Run this from a terminal."
 fi
 
-if [ "$ASSUME_YES" != 1 ] && [ -n "${CURRENT_CWD:-}" ]; then
+# Gated on CURRENT_PID, not CURRENT_CWD — a live daemon whose tree we cannot
+# resolve still needs a prompt and a stop, or the swap below starts a second
+# daemon on a port the first one still holds.
+if [ "$ASSUME_YES" != 1 ] && [ -n "${CURRENT_PID:-}" ]; then
   printf '\nStop the daemon and swap? [y/N] '
   read -r reply
   case "$reply" in [yY]*) ;; *) die "cancelled — nothing was stopped" ;; esac
 fi
 
 # ---------- stop ----------
-if [ -n "${CURRENT_CWD:-}" ]; then
+if [ -n "${CURRENT_PID:-}" ]; then
   log "stopping the current daemon"
   run_cli daemon stop || die "daemon stop failed — nothing was started, you are unchanged"
 fi
@@ -159,14 +190,20 @@ run_cli daemon status >/dev/null 2>&1 || {
 
 # Prove it is OUR build serving, not a survivor or a desktop-managed daemon.
 NEW_PID=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$PIDFILE" | head -1)
-NEW_CWD=$(lsof -a -p "$NEW_PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
-serves_build_tree "$NEW_CWD" || {
+NEW_CWD=$(paseo_daemon_cwd "$NEW_PID")
+if [ -z "$NEW_CWD" ]; then
+  # Unverifiable, not wrong: `daemon status` already answered above, and
+  # killing a daemon that is actually fine because this machine has neither
+  # /proc nor lsof would leave the user with nothing and the wrong diagnosis.
+  warn "daemon up (pid $NEW_PID) but its tree could not be verified — no /proc, no lsof"
+  log "daemon up — pid $NEW_PID, tree unverified"
+elif serves_build_tree "$NEW_CWD"; then
+  log "daemon up — pid $NEW_PID, serving $BUILD_DIR"
+else
   kill_spawned
   die "a daemon is up (pid $NEW_PID) but serves '$NEW_CWD', not the build tree.
   Something else won the port. Read $DAEMON_LOG."
-}
-
-log "daemon up — pid $NEW_PID, serving $BUILD_DIR"
+fi
 
 # ---------- desktop ----------
 if [ "$WANT_DESKTOP" = 1 ]; then
